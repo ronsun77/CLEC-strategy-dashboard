@@ -8,9 +8,10 @@ import re
 
 st.set_page_config(page_title="Pro 級質押戰略戰情室", layout="wide")
 RISK_FREE_RATE = 0.04
+WITHDRAWAL_RATE = 0.03 # 預設買借死提領率 3%
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (20年期)
+# 1. 自動抓取市場數據函數
 # ==========================================
 def fetch_asset_data(ticker):
     try:
@@ -55,7 +56,7 @@ def fetch_asset_data(ticker):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 背景自動初始化真實數據
+# 2. 初始化真實數據
 # ==========================================
 @st.cache_data(ttl=86400)
 def load_default_assets():
@@ -70,7 +71,6 @@ def load_default_assets():
         "00713.TW": "00713 (台股高息)",
         "SHY": "SHY (1-3年短債)"
     }
-    
     for ticker, display_name in defaults.items():
         data, _ = fetch_asset_data(ticker)
         if data:
@@ -84,24 +84,28 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
+# 定義策略時，明確指定其「再平衡」與「負債」行為
 if 'benchmark_strategies' not in st.session_state:
     st.session_state.benchmark_strategies = {
-        "純抱 SPY (標普500)": {"SPY (標普大盤)": 100.0},
-        "純抱 QQQ (納斯達克)": {"QQQ (美股大盤)": 100.0},
-        "經典 CLEC 433 (無借貸)": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0},
-        "穩健 623 (恆定600%)": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SHY (1-3年短債)": 30.0}
+        "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無"},
+        "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無"},
+        "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)"},
+        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)"}
     }
 
 if 'custom_strategies' not in st.session_state:
     st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎 (加入真實恆定維持率邏輯與防呆)
+# 3. 核心計算引擎 (解耦再平衡與負債模式)
 # ==========================================
-def calculate_metrics(weights_dict, margin_rate, rebalance_type, target_margin_ratio=6.0):
+def calculate_metrics(strategy_config, margin_rate, target_margin_ratio=6.0):
+    weights_dict = strategy_config["wts"]
+    rebalance_type = strategy_config["rebal"]
+    debt_mode = strategy_config["debt_mode"]
+    
     initial_total_weight = sum(weights_dict.values())
-    # 初始負債 (超過100%的部分視為借款)
-    initial_debt = max(0, initial_total_weight - 100.0)
+    initial_debt_ratio = max(0, initial_total_weight - 100.0)
     
     sys_beta, est_vol, est_mdd = 0.0, 0.0, 0.0
     all_years = set()
@@ -116,11 +120,8 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type, target_margin_r
             est_mdd += asset.get("mdd", 0) * w_pct
             
     strategy_annuals = {}
-    
-    # 初始本金 1 單位，轉換為絕對金額進行模擬
     portfolio_equity = 1.0 
-    current_debt_amount = initial_debt / 100.0
-    # 初始各資產的絕對金額
+    current_debt_amount = initial_debt_ratio / 100.0
     current_asset_amounts = {name: (weight/100.0) for name, weight in weights_dict.items()}
     
     is_bankrupt = False
@@ -130,105 +131,89 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type, target_margin_r
             strategy_annuals[year] = 0
             continue
             
-        year_gross_return = 0
         year_start_assets = sum(current_asset_amounts.values())
         
-        # 1. 模擬該年度資產增減
+        # 1. 模擬該年度資產增長
         for name, amount in current_asset_amounts.items():
             if name in st.session_state.asset_library and amount > 0:
                 asset_annuals = st.session_state.asset_library[name].get("annuals", {})
-                ret = asset_annuals.get(year, 0) if year in asset_annuals else 0
+                ret = asset_annuals.get(year, 0)
+                if ret == 0 and st.session_state.asset_library[name].get("type") == "Defensive":
+                    ret = 0.02 # 填補早期債券空白
                 current_asset_amounts[name] = amount * (1 + ret)
                 
-        year_end_assets = sum(current_asset_amounts.values())
-        
-        # 2. 扣除借貸利息
+        # 2. 處理負債與利息
         interest_cost = current_debt_amount * margin_rate
-        current_debt_amount += interest_cost # 利息滾入負債
+        current_debt_amount += interest_cost
         
-        # 3. 結算本年度淨值 (Equity)
+        # 3. 處理「買借死」的生活費提領 (假設每年提領年初淨值的 3%)
+        withdrawal_amount = 0
+        if debt_mode == "買借死 (提領生活費)":
+            withdrawal_amount = portfolio_equity * WITHDRAWAL_RATE
+            current_debt_amount += withdrawal_amount # 借款支付生活費，不買資產
+            
+        year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 💥 破產保護：如果淨值歸零或為負，宣告破產，避免產生虛數
         if portfolio_equity <= 0:
             portfolio_equity = 0
             is_bankrupt = True
-            strategy_annuals[year] = -1.0 # 該年回報 -100%
+            strategy_annuals[year] = -1.0
             continue
             
-        # 計算年度淨報酬率
         if year_start_assets > 0:
-            net_year_return = (portfolio_equity - (year_start_assets - (current_debt_amount - interest_cost))) / (year_start_assets - (current_debt_amount - interest_cost))
+            # 淨報酬率計算需扣除提領額，以反映真實資產池成長
+            net_year_return = (portfolio_equity - (year_start_assets - (current_debt_amount - interest_cost - withdrawal_amount))) / (year_start_assets - (current_debt_amount - interest_cost - withdrawal_amount))
         else:
             net_year_return = 0
         strategy_annuals[year] = net_year_return
         
-        # 判斷是否為純大盤策略 (不執行複雜再平衡)
-        is_pure_index = len([w for w in weights_dict.values() if w > 0]) == 1
-        
-        if not is_pure_index:
-            if rebalance_type == "傳統定時再平衡":
-                # 強制將權重調回初始設定
-                for name, weight in weights_dict.items():
-                    current_asset_amounts[name] = portfolio_equity * (weight/100.0)
-                current_debt_amount = portfolio_equity * (initial_debt/100.0)
-                
-            elif rebalance_type == "CLEC 聰明再平衡 (含恆定增貸)":
-                # --- A. 聰明再平衡邏輯 ---
-                for name, amount in current_asset_amounts.items():
-                    asset_type = st.session_state.asset_library[name].get("type", "")
-                    ret = st.session_state.asset_library[name].get("annuals", {}).get(year, 0)
-                    
-                    if asset_type == "Leverage":
-                        if ret > 0:
-                            # 抽出獲利的 30% 給防守部位
-                            profit = (amount / (1+ret)) * ret
-                            profit_to_extract = profit * 0.3
-                            current_asset_amounts[name] -= profit_to_extract
-                            
-                            for d_name in current_asset_amounts.keys():
-                                if st.session_state.asset_library[d_name].get("type") == "Defensive":
-                                    current_asset_amounts[d_name] += profit_to_extract
-                                    break
-                        elif ret < 0:
-                            # 用防守部位的 2% 救援
-                            for d_name in current_asset_amounts.keys():
-                                if st.session_state.asset_library[d_name].get("type") == "Defensive":
-                                    rescue_amount = current_asset_amounts[d_name] * 0.02
-                                    current_asset_amounts[d_name] -= rescue_amount
-                                    current_asset_amounts[name] += rescue_amount
-                                    break
-                                    
-                # --- B. 恆定維持率 (動態增貸) 邏輯 ---
-                if initial_debt > 0: # 代表這是一個有質押設定的策略 (如 623)
-                    # 尋找原型資產作為擔保品 (這裡簡化，將所有 Prototype 視為可質押)
-                    collateral_value = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Prototype"])
-                    
-                    if collateral_value > 0:
-                        # 計算維持率 (擔保品市值 / 負債)
-                        # 如果負債為 0，視為維持率無限大
-                        current_margin_ratio = collateral_value / current_debt_amount if current_debt_amount > 0 else float('inf')
-                        
-                        # 如果當前維持率高於目標 (例如 > 600%)，代表資產膨脹，可以增貸
-                        if current_margin_ratio > target_margin_ratio:
-                            # 計算目標負債 = 擔保品市值 / 目標維持率
-                            target_debt = collateral_value / target_margin_ratio
-                            new_loan_amount = target_debt - current_debt_amount
-                            
-                            # 實際增貸
-                            current_debt_amount += new_loan_amount
-                            
-                            # 將增貸的錢回灌到資產池中 (依照原本 623 的比例分配)
-                            # 這裡簡化為按比例均分給所有大於 0 的資產
-                            active_assets_count = len([n for n, amt in current_asset_amounts.items() if amt > 0])
-                            if active_assets_count > 0:
-                                add_per_asset = new_loan_amount / active_assets_count
-                                for n in current_asset_amounts.keys():
-                                    if current_asset_amounts[n] > 0:
-                                        current_asset_amounts[n] += add_per_asset
+        # 4. 執行再平衡與負債調整
+        if rebalance_type == "CLEC":
+            # 聰明再平衡 (上抽30%，下接2%)
+            for name, amount in current_asset_amounts.items():
+                asset_type = st.session_state.asset_library[name].get("type", "")
+                ret = st.session_state.asset_library[name].get("annuals", {}).get(year, 0)
+                if asset_type == "Leverage":
+                    if ret > 0:
+                        profit = (amount / (1+ret)) * ret
+                        extract = profit * 0.3
+                        current_asset_amounts[name] -= extract
+                        for d_name in current_asset_amounts.keys():
+                            if st.session_state.asset_library[d_name].get("type") == "Defensive":
+                                current_asset_amounts[d_name] += extract
+                                break
+                    elif ret < 0:
+                        for d_name in current_asset_amounts.keys():
+                            if st.session_state.asset_library[d_name].get("type") == "Defensive":
+                                rescue = current_asset_amounts[d_name] * 0.02
+                                current_asset_amounts[d_name] -= rescue
+                                current_asset_amounts[name] += rescue
+                                break
+                                
+        elif rebalance_type == "傳統定時":
+            # 恢復初始權重比例
+            total_assets = sum(current_asset_amounts.values())
+            for name, weight in weights_dict.items():
+                current_asset_amounts[name] = total_assets * (weight/sum(weights_dict.values()))
+
+        # 5. 恆定增貸邏輯 (只對 623 等有開啟增貸模式的策略執行)
+        if debt_mode == "恆定維持率 (增貸再投資)":
+            collateral_value = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Prototype"])
+            if collateral_value > 0:
+                current_margin_ratio = collateral_value / current_debt_amount if current_debt_amount > 0 else float('inf')
+                if current_margin_ratio > target_margin_ratio:
+                    target_debt = collateral_value / target_margin_ratio
+                    new_loan = target_debt - current_debt_amount
+                    if new_loan > 0:
+                        current_debt_amount += new_loan
+                        # 依照當前權重比例回灌資產池
+                        total_assets_now = sum(current_asset_amounts.values())
+                        if total_assets_now > 0:
+                            for n in current_asset_amounts.keys():
+                                current_asset_amounts[n] += new_loan * (current_asset_amounts[n] / total_assets_now)
                 
     num_years = len(strategy_annuals)
-    
     if num_years > 0 and not is_bankrupt:
         cagr = (portfolio_equity ** (1 / num_years)) - 1
         avg_annual_ret = sum(strategy_annuals.values()) / num_years
@@ -238,55 +223,56 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type, target_margin_r
         if is_bankrupt: portfolio_equity = 0
     
     is_pure_index = len([w for w in weights_dict.values() if w > 0]) == 1
-    type_label = "純大盤對照" if is_pure_index else "經典對照"
+    type_label = "純大盤對照" if is_pure_index else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
     
     return {
-        "總權重": initial_total_weight, "實質負債": initial_debt,
-        "系統 Beta": sys_beta, "年化淨報酬率(CAGR)": cagr, 
-        "20年終值倍數": portfolio_equity, "年化波動率": est_vol,
-        "最大回撤": est_mdd, "夏普值": sharpe, "annuals": strategy_annuals,
+        "總權重": initial_total_weight, 
+        "負債模式": debt_mode,
+        "再平衡": rebalance_type,
+        "系統 Beta": sys_beta, 
+        "年化淨報酬率(CAGR)": cagr, 
+        "20年終值倍數": portfolio_equity, 
+        "最大回撤": est_mdd, 
+        "夏普值": sharpe, 
+        "annuals": strategy_annuals,
         "類型": type_label
     }
 
 # ==========================================
 # 4. 介面渲染：側邊欄
 # ==========================================
-st.sidebar.title("⚙️ 系統設定與資產庫")
+st.sidebar.title("⚙️ 系統全局設定")
 margin_rate = st.sidebar.number_input("質押借貸利率 (%)", 0.0, 10.0, 2.5, 0.1) / 100.0
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🔄 再平衡機制選擇")
-rebalance_choice = st.sidebar.radio(
-    "選擇年度再平衡策略", 
-    ("傳統定時再平衡", "CLEC 聰明再平衡 (含恆定增貸)", "不執行再平衡"),
-    index=1
-)
-
-st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
-
 with st.sidebar.form("auto_fetch_form"):
     ticker_input = st.text_input("輸入股票/ETF代號")
-    fetch_btn = st.form_submit_button("自動抓取並新增")
-    
+    fetch_btn = st.form_submit_button("抓取並新增")
     if fetch_btn and ticker_input:
-        with st.spinner(f"正在分析 {ticker_input}..."):
+        with st.spinner("分析中..."):
             data, msg = fetch_asset_data(ticker_input)
             if data:
-                display_name = f"{ticker_input.upper()} (自訂)"
-                st.session_state.asset_library[display_name] = data
+                st.session_state.asset_library[f"{ticker_input.upper()} (自訂)"] = data
                 st.success(msg)
-            else:
-                st.error(msg)
 
 # ==========================================
-# 5. 主畫面：策略建構器
+# 5. 主畫面：策略建構器 (加入解耦選項)
 # ==========================================
 st.title("📊 頂級質押戰略戰情室")
 
 st.subheader("🛠️ 建立新的自訂戰略")
 with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", "我的新戰略")
+    
+    # 策略模組選擇
+    col_r, col_d = st.columns(2)
+    with col_r:
+        rebal_mode = st.selectbox("再平衡模組", ["CLEC", "傳統定時", "不執行"])
+    with col_d:
+        debt_mode = st.selectbox("負債運用模組", ["無", "恆定維持率 (增貸再投資)", "買借死 (提領生活費)"])
+    
+    st.write("精確輸入資產權重 (%)：")
     cols = st.columns(5)
     selected_assets = {}
     asset_opts = list(st.session_state.asset_library.keys())
@@ -300,10 +286,15 @@ with st.form("create_strategy_form"):
 
     if st.form_submit_button("📥 儲存策略並加入比較表"):
         if selected_assets:
-            st.session_state.custom_strategies[strat_name] = selected_assets
+            st.session_state.custom_strategies[strat_name] = {
+                "name": "🎯 " + strat_name,
+                "wts": selected_assets,
+                "rebal": rebal_mode,
+                "debt_mode": debt_mode
+            }
             st.success("策略已加入！")
 
-if st.button("🗑️ 清空所有自訂策略"):
+if st.button("🗑️ 清空自訂策略"):
     st.session_state.custom_strategies = {}
     st.rerun()
 
@@ -312,37 +303,36 @@ st.markdown("---")
 # ==========================================
 # 6. 終極比較表與視覺化圖表
 # ==========================================
-st.subheader(f"🏆 戰略終極比較表 (目前模式: {rebalance_choice})")
+st.subheader("🏆 戰略終極比較表")
+st.caption("✅ 已解耦：433 將執行生活費提領，而 623 將執行恆定增貸再投資。")
 
 comp_data = []
 annual_chart_data = []
 
-for name, wts in st.session_state.benchmark_strategies.items():
-    res = calculate_metrics(wts, margin_rate, rebalance_choice)
-    res["策略名稱"] = name; res["類型"] = res["類型"]
+for name, config in st.session_state.benchmark_strategies.items():
+    res = calculate_metrics(config, margin_rate)
+    res["策略名稱"] = name
     comp_data.append(res)
     for year, ret in res["annuals"].items():
         annual_chart_data.append({"策略名稱": name, "年份": year, "報酬率": ret, "類型": res["類型"]})
 
-for name, wts in st.session_state.custom_strategies.items():
-    res = calculate_metrics(wts, margin_rate, rebalance_choice)
-    res["策略名稱"] = "🎯 " + name; res["類型"] = "自訂戰略"
+for name, config in st.session_state.custom_strategies.items():
+    res = calculate_metrics(config, margin_rate)
+    res["策略名稱"] = config["name"]
     comp_data.append(res)
     for year, ret in res["annuals"].items():
-        annual_chart_data.append({"策略名稱": "🎯 " + name, "年份": year, "報酬率": ret, "類型": "自訂戰略"})
+        annual_chart_data.append({"策略名稱": config["name"], "年份": year, "報酬率": ret, "類型": res["類型"]})
 
 df_comp = pd.DataFrame(comp_data)
 
 if not df_comp.empty:
-    cols_order = ["類型", "策略名稱", "總權重", "實質負債", "系統 Beta", "年化淨報酬率(CAGR)", "20年終值倍數", "年化波動率", "最大回撤", "夏普值"]
+    cols_order = ["類型", "策略名稱", "總權重", "負債模式", "再平衡", "系統 Beta", "年化淨報酬率(CAGR)", "20年終值倍數", "最大回撤", "夏普值"]
     df_display = df_comp[cols_order].copy()
     
     df_display["總權重"] = df_display["總權重"].apply(lambda x: f"{x:.0f}%")
-    df_display["實質負債"] = df_display["實質負債"].apply(lambda x: f"{x:.0f}%")
     df_display["系統 Beta"] = df_display["系統 Beta"].apply(lambda x: f"{x:.2f}")
     df_display["年化淨報酬率(CAGR)"] = df_display["年化淨報酬率(CAGR)"].apply(lambda x: f"{x*100:.2f}%")
     df_display["20年終值倍數"] = df_display["20年終值倍數"].apply(lambda x: f"{x:.1f}x")
-    df_display["年化波動率"] = df_display["年化波動率"].apply(lambda x: f"{x*100:.2f}%")
     df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
     df_display["夏普值"] = df_display["夏普值"].apply(lambda x: f"{x:.3f}")
     
@@ -350,7 +340,7 @@ if not df_comp.empty:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("💰 複利終值倍數 (越高越好)")
+        st.subheader("💰 複利終值倍數")
         df_chart_multiple = df_comp.sort_values(by="20年終值倍數", ascending=True)
         fig_mult = px.bar(df_chart_multiple, x="20年終值倍數", y="策略名稱", color="類型", orientation='h', text="20年終值倍數",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
@@ -358,7 +348,7 @@ if not df_comp.empty:
         st.plotly_chart(fig_mult, use_container_width=True)
         
     with col2:
-        st.subheader("🛡️ 壓力測試：最大回撤 (MDD)")
+        st.subheader("🛡️ 壓力測試：最大回撤")
         df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
         fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="類型", orientation='h', text="最大回撤",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
@@ -367,7 +357,7 @@ if not df_comp.empty:
         st.plotly_chart(fig_mdd, use_container_width=True)
 
     st.markdown("---")
-    st.subheader("📆 歷年淨報酬率壓力測試 (最長 20 年)")
+    st.subheader("📆 歷年淨報酬率走勢 (20 年)")
     if annual_chart_data:
         df_annual = pd.DataFrame(annual_chart_data)
         df_annual = df_annual.sort_values(by="年份")
@@ -375,8 +365,8 @@ if not df_comp.empty:
                             color_discrete_map={
                                 "純抱 SPY (標普500)": "#c7c7c7",
                                 "純抱 QQQ (納斯達克)": "#7f7f7f",
-                                "經典 CLEC 433 (無借貸)": "#1f77b4", 
-                                "穩健 623 (恆定600%)": "#ff7f0e",
+                                "經典 CLEC 433 (買借死)": "#1f77b4", 
+                                "穩健 623 (恆定增貸)": "#ff7f0e",
                                 "🎯 我的新戰略": "#E45756"
                             })
         fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度淨報酬率", xaxis_title="年份", height=500)
