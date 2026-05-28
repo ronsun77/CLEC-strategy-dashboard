@@ -14,7 +14,7 @@ RISK_FREE_RATE = 0.04
 # 1. 自動抓取市場數據函數 
 # ==========================================
 @st.cache_data(ttl=86400)
-def fetch_asset_data_v4(ticker, asset_type, beta):
+def fetch_asset_base_data(ticker, asset_type):
     try:
         ticker = ticker.strip().upper()
         if re.match(r'^\d+[A-Z]*$', ticker) and '.TW' not in ticker and '.TWO' not in ticker:
@@ -34,14 +34,13 @@ def fetch_asset_data_v4(ticker, asset_type, beta):
         return {
             "prices": prices,
             "inception_date": inception_date,
-            "beta": float(beta),
             "type": asset_type
         }, f"成功抓取 {ticker}！掛牌日: {inception_date}"
     except Exception as e:
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略
+# 2. 初始化預設資產與策略 (預設資產自動帶入基準 Beta)
 # ==========================================
 def load_default_assets():
     lib = {
@@ -49,15 +48,17 @@ def load_default_assets():
         "現金": {"prices": pd.Series(dtype=float), "inception_date": datetime.date(1990, 1, 1), "beta": 0.0, "type": "Defensive"}
     }
     defaults = [
-        ("SPY", "SPY (標普大盤)", "Prototype", 1.0),
         ("QQQ", "QQQ (美股大盤)", "Prototype", 1.0),
+        ("SPY", "SPY (標普大盤)", "Prototype", 1.0),
         ("QLD", "QLD (美股正2)", "Leverage", 2.0),
         ("00713.TW", "00713 (台股高息)", "Prototype", 0.65),
         ("SHY", "SHY (1-3年短債)", "Defensive", 0.0)
     ]
     for ticker, display_name, a_type, beta in defaults:
-        data, _ = fetch_asset_data_v4(ticker, a_type, beta)
-        if data: lib[display_name] = data
+        data, _ = fetch_asset_base_data(ticker, a_type)
+        if data:
+            data["beta"] = beta
+            lib[display_name] = data
     return lib
 
 if 'asset_library' not in st.session_state:
@@ -73,7 +74,7 @@ if 'benchmark_strategies' not in st.session_state:
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 歷史回測時間軸與對齊控制器
+# 3. 穩定時間軸狀態控制 (解決無法選擇 2017 之後的 Bug)
 # ==========================================
 st.sidebar.markdown("### 歷史回測與分析引擎 (Path-Dependent Rebalance)")
 
@@ -91,15 +92,26 @@ for asset in active_assets:
     if inc_date > max_inception_date and asset not in ["無 (不配置)", "現金"]: 
         max_inception_date = inc_date
 
-align_inception = st.sidebar.checkbox(f"🛡️ 將回測起始日對齊最晚發行資產的掛牌日 ({max_inception_date})", value=True)
+align_inception = st.sidebar.checkbox(f"🛡️ 回測起始日限制不早於最晚發行資產掛牌日 ({max_inception_date})", value=True)
+
+# 使用 session_state 來鎖定使用者選擇的日期，防止回彈
+if 'start_date' not in st.session_state:
+    st.session_state.start_date = max_inception_date
+if 'end_date' not in st.session_state:
+    st.session_state.end_date = datetime.date.today()
+
+min_allowed_date = max_inception_date if align_inception else datetime.date(1999, 1, 1)
+if st.session_state.start_date < min_allowed_date:
+    st.session_state.start_date = min_allowed_date
 
 col_d1, col_d2 = st.sidebar.columns(2)
 with col_d1:
-    default_start = max_inception_date if align_inception else datetime.date(2005, 1, 1)
-    if default_start > datetime.date.today(): default_start = datetime.date.today() - datetime.timedelta(days=365)
-    start_date = st.date_input("回測起始日", default_start)
+    start_date = st.date_input("回測起始日", st.session_state.start_date, min_value=min_allowed_date, max_value=datetime.date.today())
 with col_d2:
-    end_date = st.date_input("回測結束日", datetime.date.today())
+    end_date = st.date_input("回測結束日", st.session_state.end_date, min_value=min_allowed_date, max_value=datetime.date.today())
+
+st.session_state.start_date = start_date
+st.session_state.end_date = end_date
 
 st.sidebar.markdown("---")
 margin_rate = st.sidebar.number_input("質押借貸利率 (%)", 0.0, 10.0, 2.5, 0.1) / 100.0
@@ -113,24 +125,42 @@ if withdraw_mode == "總資產百分比 (%)":
 else:
     withdraw_value = st.sidebar.number_input("年提領金額 (元)", min_value=0, value=600000, step=50000)
 
+# 💥 實裝功能 2：新增資產自動計量相對於 QQQ 的 Beta
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
 with st.sidebar.form("auto_fetch_form"):
     ticker_input = st.text_input("輸入股票/ETF代號 (如: 0050, BND, NVDA)")
     custom_type = st.selectbox("核心資產屬性分類", ["原型資產 (Prototype)", "槓桿正2 (Leverage)", "防守短債 (Defensive)"])
-    custom_beta = st.number_input("該資產的系統 Beta 值", min_value=0.0, max_value=4.0, value=1.0, step=0.1)
     
     if st.form_submit_button("抓取並新增") and ticker_input:
-        with st.spinner("真實市場連線中..."):
+        with st.spinner("真實市場連線中...與 QQQ 進行聯立矩陣運算中..."):
             type_map = {"原型資產 (Prototype)": "Prototype", "槓桿正2 (Leverage)": "Leverage", "防守短債 (Defensive)": "Defensive"}
-            data, msg = fetch_asset_data_v4(ticker_input, type_map[custom_type], custom_beta)
+            data, msg = fetch_asset_base_data(ticker_input, type_map[custom_type])
             if data: 
-                st.session_state.asset_library[f"{ticker_input.upper()} (自訂)"] = data
-                st.success(msg)
+                # 💥 量化核心：自動計算與 QQQ 交集時間軸的日線 Beta 值
+                calculated_beta = 1.0
+                ticker_upper = ticker_input.strip().upper()
+                if "QQQ (美股大盤)" in st.session_state.asset_library and ticker_upper != "QQQ":
+                    qqq_p = st.session_state.asset_library["QQQ (美股大盤)"]["prices"]
+                    asset_p = data["prices"]
+                    common_idx = asset_p.index.intersection(qqq_p.index)
+                    if len(common_idx) > 30:
+                        asset_ret = asset_p.loc[common_idx].pct_change().dropna()
+                        qqq_ret = qqq_p.loc[common_idx].pct_change().dropna()
+                        common_idx2 = asset_ret.index.intersection(qqq_ret.index)
+                        if len(common_idx2) > 30:
+                            matrix = np.cov(asset_ret.loc[common_idx2], qqq_ret.loc[common_idx2])
+                            covariance = matrix[0][1]
+                            variance = matrix[1][1]
+                            calculated_beta = covariance / variance if variance != 0 else 1.0
+                
+                data["beta"] = calculated_beta
+                st.session_state.asset_library[f"{ticker_upper} (自訂)"] = data
+                st.success(f"{msg} (系統自動精確對標 QQQ 計算之 Beta 值 = {calculated_beta:.2f})")
                 st.rerun()
 
 # ==========================================
-# 4. 💥 核心計算引擎：升級為「真・日線級時間序列迴圈」
+# 4. 核心計算引擎 
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -142,17 +172,14 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     initial_debt_ratio = max(0, initial_total_weight - 100.0)
     sys_beta = 0.0
     
-    # 準備日線資料矩陣
     df_prices = pd.DataFrame()
     for name, weight in weights_dict.items():
         if weight > 0 and name in st.session_state.asset_library:
             sys_beta += st.session_state.asset_library[name].get("beta", 0.0) * (weight / 100.0)
             if name not in ["無 (不配置)", "現金"]:
                 prices = st.session_state.asset_library[name].get("prices")
-                if not prices.empty:
-                    df_prices[name] = prices
+                if not prices.empty: df_prices[name] = prices
 
-    # 切片與填補缺漏日 (向前填充)
     if not df_prices.empty:
         df_prices = df_prices.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].ffill().bfill()
         df_returns = df_prices.pct_change().fillna(0)
@@ -163,7 +190,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
 
     trading_days = df_returns.index
     
-    # 預先計算「每月底」與「每年底」的日期，用於繪圖與再平衡觸發
     if len(trading_days) > 0:
         eom_dates = set(df_returns.groupby([df_returns.index.year, df_returns.index.month]).apply(lambda x: x.index[-1]))
         eoy_dates = set(df_returns.groupby(df_returns.index.year).apply(lambda x: x.index[-1]))
@@ -174,7 +200,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     current_debt_amount = (initial_debt_ratio / 100.0) * init_capital
     current_asset_amounts = {name: (weight/100.0) * init_capital for name, weight in weights_dict.items()}
     
-    # 紀錄年初始淨值(用於 CLEC 再平衡計算) 與 年末淨值(用於計算年度報酬)
     year_start_assets = {name: current_asset_amounts[name] for name in current_asset_amounts}
     prev_eoy_equity = init_capital
     
@@ -187,10 +212,8 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     bankruptcy_reason = "存活"
     bankruptcy_date = ""
 
-    # 日均轉換常數
     daily_interest_rate = margin_rate / 252.0
 
-    # 💥 啟動逐日精確運算迴圈
     for date in trading_days:
         if is_bankrupt:
             if date in eom_dates or date == trading_days[-1]:
@@ -202,14 +225,12 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             
         row = df_returns.loc[date]
         
-        # 1. 逐日資產增長
         for name, amount in current_asset_amounts.items():
             if name in st.session_state.asset_library and amount > 0:
                 if name in ["無 (不配置)", "現金"]: ret = 0.02 / 252.0
                 else: ret = row.get(name, 0.0)
                 current_asset_amounts[name] = amount * (1 + ret)
                 
-        # 2. 逐日利息扣血與生活費提領
         interest_cost = current_debt_amount * daily_interest_rate
         current_debt_amount += interest_cost
         
@@ -226,7 +247,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 3. 逐日精確風控：每天緊盯維持率
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
         bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Defensive"])
         
@@ -236,7 +256,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         display_reg = min(current_reg_margin, 10.0)
         display_bond = min(current_bond_margin, 10.0)
         
-        # 判定斷頭
         if portfolio_equity <= 0:
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_reason = "淨值歸零"; bankruptcy_date = date.strftime("%Y-%m-%d")
         elif current_reg_margin < 1.4 and current_debt_amount > 0: 
@@ -246,23 +265,18 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             if date in eoy_dates: strategy_annuals[date.year] = -1.0
             continue
             
-        # 4. 記錄繪圖點 (為求網頁順暢，僅記錄每月底與最後一天)
         if date in eom_dates or date == trading_days[-1]:
             equity_curve.append({"日期": date, "淨值": portfolio_equity, "負債": current_debt_amount})
             reg_margin_curve.append({"日期": date, "法規維持率": display_reg})
             bond_margin_curve.append({"日期": date, "純債維持率": display_bond})
             
-        # 5. 年底動作 (年度結算、再平衡、恆定增貸)
         if date in eoy_dates:
-            # 結算年度報酬
             strategy_annuals[date.year] = (portfolio_equity / prev_eoy_equity) - 1.0 if prev_eoy_equity > 0 else 0
             prev_eoy_equity = portfolio_equity
             
-            # 再平衡
             if rebalance_type == "CLEC":
                 for name, amount in current_asset_amounts.items():
                     if st.session_state.asset_library[name].get("type") == "Leverage":
-                        # 計算當年槓桿資產的總漲跌幅
                         yr_ret = (amount / year_start_assets[name]) - 1.0 if year_start_assets[name] > 0 else 0
                         if yr_ret > 0:
                             extract = ((amount / (1+yr_ret)) * yr_ret) * 0.3
@@ -278,7 +292,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 total_assets = sum(current_asset_amounts.values())
                 for name, weight in weights_dict.items(): current_asset_amounts[name] = total_assets * (weight/sum(weights_dict.values()))
 
-            # 恆定增貸
             if debt_mode == "恆定維持率 (增貸再投資)":
                 legal_col = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
                 c_margin = legal_col / current_debt_amount if current_debt_amount > 0 else float('inf')
@@ -290,10 +303,8 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                         if total_assets_now > 0:
                             for n in current_asset_amounts.keys(): current_asset_amounts[n] += new_loan * (current_asset_amounts[n] / total_assets_now)
             
-            # 更新年初始基準
             for name in current_asset_amounts: year_start_assets[name] = current_asset_amounts[name]
 
-    # 計算統計指標
     num_years = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
     cagr = ((portfolio_equity / init_capital) ** (1 / num_years)) - 1 if num_years > 0 and not is_bankrupt and portfolio_equity > 0 else 0
     
@@ -302,12 +313,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
         df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0 
         real_mdd = df_curve["水下回撤"].min()
-        
-        # 由於改為月底採樣，需乘上年化係數 sqrt(12) 來還原年化波動率
         real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(12) if len(df_curve) > 1 else 0.0
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
         
-        # 精確計算套牢月數轉換天數
         max_recovery_months = 0
         current_drop_months = 0
         for idx, row in df_curve.iterrows():
@@ -316,7 +324,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 if current_drop_months > max_recovery_months: max_recovery_months = current_drop_months
                 current_drop_months = 0
         if current_drop_months > max_recovery_months: max_recovery_months = current_drop_months
-        max_recovery_days = int(max_recovery_months * 30.4) # 大致轉換回天數
+        max_recovery_days = int(max_recovery_months * 30.4)
     else:
         real_mdd = -1.0; real_vol = 0.0; sharpe = 0; max_recovery_days = 9999
 
