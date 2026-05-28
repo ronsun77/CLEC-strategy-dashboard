@@ -11,10 +11,10 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (抓取最大歷史區間)
+# 1. 自動抓取市場數據函數 (解耦硬編碼分類，改由參數注入)
 # ==========================================
 @st.cache_data(ttl=86400)
-def fetch_asset_data_v3(ticker): # 更改函數名稱強制突破舊快取
+def fetch_asset_data_v4(ticker, asset_type, beta):
     try:
         ticker = ticker.strip().upper()
         if re.match(r'^\d+[A-Z]*$', ticker) and '.TW' not in ticker and '.TWO' not in ticker:
@@ -31,36 +31,36 @@ def fetch_asset_data_v3(ticker): # 更改函數名稱強制突破舊快取
             
         inception_date = prices.index[0].date()
         
-        beta = 1.0; asset_type = "Prototype"
-        if "QLD" in ticker or "正2" in ticker or "L" in ticker: beta = 2.0; asset_type = "Leverage"
-        elif "00713" in ticker: beta = 0.65; asset_type = "Prototype"
-        elif "SHY" in ticker or "債" in ticker or "SGOV" in ticker: beta = 0.0; asset_type = "Defensive"
-        
         return {
             "prices": prices,
             "inception_date": inception_date,
-            "beta": beta,
+            "beta": float(beta),
             "type": asset_type
         }, f"成功抓取 {ticker}！掛牌日: {inception_date}"
     except Exception as e:
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (加入防彈刷新機制)
+# 2. 初始化預設資產與策略 (精確架構分類)
 # ==========================================
 def load_default_assets():
     lib = {
         "無 (不配置)": {"prices": pd.Series(dtype=float), "inception_date": datetime.date(1990, 1, 1), "beta": 0.0, "type": "None"},
         "現金": {"prices": pd.Series(dtype=float), "inception_date": datetime.date(1990, 1, 1), "beta": 0.0, "type": "Defensive"}
     }
-    defaults = {"SPY": "SPY (標普大盤)", "QQQ": "QQQ (美股大盤)", "QLD": "QLD (美股正2)", "00713.TW": "00713 (台股高息)", "SHY": "SHY (1-3年短債)"}
-    for ticker, display_name in defaults.items():
-        data, _ = fetch_asset_data_v3(ticker)
+    defaults = [
+        ("SPY", "SPY (標普大盤)", "Prototype", 1.0),
+        ("QQQ", "QQQ (美股大盤)", "Prototype", 1.0),
+        ("QLD", "QLD (美股正2)", "Leverage", 2.0),
+        ("00713.TW", "00713 (台股高息)", "Prototype", 0.65),
+        ("SHY", "SHY (1-3年短債)", "Defensive", 0.0)
+    ]
+    for ticker, display_name, a_type, beta in defaults:
+        data, _ = fetch_asset_data_v4(ticker, a_type, beta)
         if data: lib[display_name] = data
     return lib
 
-# 強制清洗舊快取
-if 'asset_library' not in st.session_state or "inception_date" not in st.session_state.asset_library.get("SPY", {}):
+if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
 if 'benchmark_strategies' not in st.session_state:
@@ -68,13 +68,12 @@ if 'benchmark_strategies' not in st.session_state:
         "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
         "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
         "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
-        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
-        "防禦 812 (恆定1000%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SHY (1-3年短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 10.0}
+        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
     }
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 找出最晚掛牌日並構建 UI 時間軸控制器
+# 3. 歷史回測時間軸與對齊控制器
 # ==========================================
 st.sidebar.markdown("### 歷史回測與分析引擎 (Path-Dependent Rebalance)")
 
@@ -92,7 +91,7 @@ for asset in active_assets:
     if inc_date > max_inception_date and asset not in ["無 (不配置)", "現金"]: 
         max_inception_date = inc_date
 
-align_inception = st.sidebar.checkbox(f"🛡️ 將回測起始日對齊最晚發行資產的掛牌日 ({max_inception_date})，避免早期填補數據造成失真", value=True)
+align_inception = st.sidebar.checkbox(f"🛡️ 將回測起始日對齊最晚發行資產的掛牌日 ({max_inception_date})", value=True)
 
 col_d1, col_d2 = st.sidebar.columns(2)
 with col_d1:
@@ -114,17 +113,25 @@ if withdraw_mode == "總資產百分比 (%)":
 else:
     withdraw_value = st.sidebar.number_input("年提領金額 (元)", min_value=0, value=600000, step=50000)
 
+# 💥 升級版：側邊欄新增資產控制面板 (徹底解決屬性黑洞)
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
 with st.sidebar.form("auto_fetch_form"):
-    ticker_input = st.text_input("輸入股票/ETF代號")
+    ticker_input = st.text_input("輸入股票/ETF代號 (如: 0050, BND, NVDA)")
+    custom_type = st.selectbox("核心資產屬性分類", ["原型資產 (Prototype)", "槓桿正2 (Leverage)", "防守短債 (Defensive)"])
+    custom_beta = st.number_input("該資產的系統 Beta 值", min_value=0.0, max_value=4.0, value=1.0, step=0.1)
+    
     if st.form_submit_button("抓取並新增") and ticker_input:
         with st.spinner("真實市場連線中..."):
-            data, msg = fetch_asset_data_v3(ticker_input)
-            if data: st.session_state.asset_library[f"{ticker_input.upper()} (自訂)"] = data; st.success(msg)
+            type_map = {"原型資產 (Prototype)": "Prototype", "槓桿正2 (Leverage)": "Leverage", "防守短債 (Defensive)": "Defensive"}
+            data, msg = fetch_asset_data_v4(ticker_input, type_map[custom_type], custom_beta)
+            if data: 
+                st.session_state.asset_library[f"{ticker_input.upper()} (自訂)"] = data
+                st.success(msg)
+                st.rerun() # 💥 強制即時同步主畫面下拉選單
 
 # ==========================================
-# 4. 核心計算引擎 (安全處理空陣列防呆)
+# 4. 核心計算引擎 
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -138,7 +145,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     sys_beta = 0.0
     sliced_annuals = {}
     
-    # 精確切片與防呆處理
     for name, weight in weights_dict.items():
         if name in st.session_state.asset_library and weight > 0:
             asset = st.session_state.asset_library[name]
@@ -156,10 +162,8 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                             ret = 0.0
                         else:
                             p_year = p_slice[p_slice.index.year == year]
-                            if not p_year.empty and len(p_year) > 1:
-                                ret = (p_year.iloc[-1] / p_year.iloc[0]) - 1.0
-                            else:
-                                ret = 0.0
+                            if not p_year.empty and len(p_year) > 1: ret = (p_year.iloc[-1] / p_year.iloc[0]) - 1.0
+                            else: ret = 0.0
                         if name not in sliced_annuals: sliced_annuals[name] = {}
                         sliced_annuals[name][year] = float(ret)
                 except Exception:
@@ -168,7 +172,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                         sliced_annuals[name][year] = 0.0
 
     valid_years = range(start_date.year, end_date.year + 1)
-            
     portfolio_equity = init_capital 
     current_debt_amount = (initial_debt_ratio / 100.0) * init_capital
     current_asset_amounts = {name: (weight/100.0) * init_capital for name, weight in weights_dict.items()}
@@ -212,6 +215,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
+        # 💥 風控核心：精確依照使用者的自訂分類計算擔保品
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
         bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Defensive"])
         
@@ -279,7 +283,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
         df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0 
         real_mdd = df_curve["水下回撤"].min()
-        real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(1) if len(df_curve) > 1 else 0.0
+        real_vol = df_curve["淨值"].pct_change().std() if len(df_curve) > 1 else 0.0
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
         
         max_recovery_years = 0
@@ -339,10 +343,11 @@ with st.form("create_strategy_form"):
             "target_margin": target_margin_input / 100.0 
         }
         st.success(f"已成功加入「{strat_name}」！")
+        st.rerun() # 💥 強制即時刷新主畫面比較表
 
 if st.session_state.custom_strategies:
     st.markdown("#### ⚙️ 管理與檢視自訂策略")
-    with st.expander("🔍 點擊查看所有自訂策略的詳細配比", expanded=True):
+    with St.expander("🔍 點擊查看所有自訂策略的詳細配比", expanded=True):
         for s_name, config in st.session_state.custom_strategies.items():
             wts_str = " + ".join([f"{k.split(' ')[0]} ({v}%)" for k, v in config["wts"].items() if v > 0])
             margin_info = f" ｜ 目標維持率: {config.get('target_margin', 6.0) * 100:.0f}%" if config['debt_mode'] == "恆定維持率 (增貸再投資)" else ""
