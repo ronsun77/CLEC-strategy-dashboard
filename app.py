@@ -85,16 +85,15 @@ if 'asset_library' not in st.session_state:
 
 if 'benchmark_strategies' not in st.session_state:
     st.session_state.benchmark_strategies = {
-        "經典 CLEC 433 (無借貸)": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (短債)": 30.0},
-        "穩健 622 (無借貸)": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (短債)": 20.0},
-        "效率 623 (資產110%)": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (短債)": 30.0}
+        "經典 CLEC 433": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (短債)": 30.0},
+        "穩健 623 (防禦質押)": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (短債)": 30.0}
     }
 
 if 'custom_strategies' not in st.session_state:
     st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎 (加入終值倍數計算)
+# 3. 核心計算引擎
 # ==========================================
 def calculate_metrics(weights_dict, margin_rate, rebalance_type):
     initial_total_weight = sum(weights_dict.values())
@@ -113,7 +112,7 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type):
             est_mdd += asset.get("mdd", 0) * w_pct
             
     strategy_annuals = {}
-    portfolio_value = 1.0 # 初始本金 1 單位
+    portfolio_value = 1.0 
     current_weights = {name: weight/100.0 for name, weight in weights_dict.items()}
     current_debt = initial_debt_ratio
     
@@ -138,7 +137,6 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type):
             net_year_return = year_return - interest_cost
             strategy_annuals[year] = net_year_return
             
-            # 複利增長計算
             portfolio_value *= (1 + net_year_return)
             
             if rebalance_type == "傳統定時再平衡":
@@ -163,35 +161,29 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type):
                                     current_weights[name] += rescue_amount
                                     break
                 total_w = sum(current_weights.values())
-                current_weights = {k: v/total_w for k, v in current_weights.items()}
+                if total_w > 0:
+                    current_weights = {k: v/total_w for k, v in current_weights.items()}
             elif rebalance_type == "不執行再平衡":
                 for name in current_weights.keys():
                     current_weights[name] *= (1 + asset_performances[name])
                 total_w = sum(current_weights.values())
-                current_weights = {k: v/total_w for k, v in current_weights.items()}
+                if total_w > 0:
+                    current_weights = {k: v/total_w for k, v in current_weights.items()}
 
-    # 計算累積年數
     num_years = len(strategy_annuals)
     
-    # 根據最終組合價值反推真實幾何平均年化報酬 (CAGR)
     if num_years > 0:
         cagr = (portfolio_value ** (1 / num_years)) - 1
         avg_annual_ret = sum(strategy_annuals.values()) / num_years
         sharpe = (avg_annual_ret - RISK_FREE_RATE) / est_vol if est_vol > 0 else 0
     else:
-        cagr = 0
-        sharpe = 0
-        portfolio_value = 1.0
+        cagr = 0; sharpe = 0; portfolio_value = 1.0
     
     return {
         "總權重": initial_total_weight, "實質負債": initial_debt_ratio,
-        "系統 Beta": sys_beta,
-        "年化淨報酬率(CAGR)": cagr, 
-        "20年終值倍數": portfolio_value, # 新增指標
-        "年化波動率": est_vol,
-        "最大回撤": est_mdd,
-        "夏普值": sharpe,
-        "annuals": strategy_annuals
+        "系統 Beta": sys_beta, "年化淨報酬率(CAGR)": cagr, 
+        "20年終值倍數": portfolio_value, "年化波動率": est_vol,
+        "最大回撤": est_mdd, "夏普值": sharpe, "annuals": strategy_annuals
     }
 
 # ==========================================
@@ -202,10 +194,7 @@ margin_rate = st.sidebar.number_input("質押借貸利率 (%)", 0.0, 10.0, 2.5, 
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔄 再平衡機制選擇")
-rebalance_choice = st.sidebar.radio(
-    "選擇年度再平衡策略",
-    ("傳統定時再平衡", "CLEC 聰明再平衡", "不執行再平衡")
-)
+rebalance_choice = st.sidebar.radio("選擇年度再平衡策略", ("傳統定時再平衡", "CLEC 聰明再平衡", "不執行再平衡"))
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
@@ -227,7 +216,7 @@ with st.sidebar.form("auto_fetch_form"):
 # ==========================================
 # 5. 主畫面：策略建構器
 # ==========================================
-st.title("📊 頂級質押戰略戰情室 (複利終值版)")
+st.title("📊 頂級質押戰略戰情室")
 
 st.subheader("🛠️ 建立新的自訂戰略")
 with st.form("create_strategy_form"):
@@ -246,7 +235,7 @@ with st.form("create_strategy_form"):
     if st.form_submit_button("📥 儲存策略並加入比較表"):
         if selected_assets:
             st.session_state.custom_strategies[strat_name] = selected_assets
-            st.success(f"策略已加入！")
+            st.success("策略已加入！")
 
 if st.button("🗑️ 清空所有自訂策略"):
     st.session_state.custom_strategies = {}
@@ -258,7 +247,6 @@ st.markdown("---")
 # 6. 終極比較表與視覺化圖表
 # ==========================================
 st.subheader(f"🏆 戰略終極比較表 (目前模式: {rebalance_choice})")
-st.caption("💡 新增『20年終值倍數』：代表 1 單位本金，在扣除借貸利息並經過再平衡複利後，最終成長的倍數。這能完美反映出超過 100% 槓桿資金的絕對價值。")
 
 comp_data = []
 annual_chart_data = []
@@ -287,7 +275,7 @@ if not df_comp.empty:
     df_display["實質負債"] = df_display["實質負債"].apply(lambda x: f"{x:.0f}%")
     df_display["系統 Beta"] = df_display["系統 Beta"].apply(lambda x: f"{x:.2f}")
     df_display["年化淨報酬率(CAGR)"] = df_display["年化淨報酬率(CAGR)"].apply(lambda x: f"{x*100:.2f}%")
-    df_display["20年終值倍數"] = df_display["20年終值倍數"].apply(lambda x: f"{x:.1f}x") # 顯示倍數
+    df_display["20年終值倍數"] = df_display["20年終值倍數"].apply(lambda x: f"{x:.1f}x")
     df_display["年化波動率"] = df_display["年化波動率"].apply(lambda x: f"{x*100:.2f}%")
     df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
     df_display["夏普值"] = df_display["夏普值"].apply(lambda x: f"{x:.3f}")
@@ -311,3 +299,15 @@ if not df_comp.empty:
         fig_mdd.update_traces(texttemplate='%{text:.2%}', textposition='outside')
         fig_mdd.update_layout(xaxis_tickformat='.0%')
         st.plotly_chart(fig_mdd, use_container_width=True)
+
+    # 完整補回：歷年報酬率壓力測試圖表
+    st.markdown("---")
+    st.subheader("📆 歷年淨報酬率壓力測試 (最長 20 年)")
+    st.caption("✅ 觀察 2008 與 2022 年的柱子，你會發現防禦型質押雖然在牛市略遜一籌，但在股災年的抗跌韌性。")
+    if annual_chart_data:
+        df_annual = pd.DataFrame(annual_chart_data)
+        df_annual = df_annual.sort_values(by="年份")
+        fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group",
+                            color_discrete_map={"經典 CLEC 433": "#1f77b4", "穩健 623 (防禦質押)": "#ff7f0e"})
+        fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度淨報酬率", xaxis_title="年份", height=500)
+        st.plotly_chart(fig_annual, use_container_width=True)
