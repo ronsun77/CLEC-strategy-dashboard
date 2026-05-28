@@ -42,7 +42,7 @@ def fetch_asset_data(ticker, lookback_years=20):
         drawdown = (close_prices / rolling_max) - 1.0
         mdd = drawdown.min()
         
-        # 轉換為以年為單位的收盤價字典 (供歷史年度對照使用)
+        # 轉換為以年為單位的收盤價字典
         annual_data = close_prices.resample('YE').last()
         annual_returns = {str(year.year): float(val) for year, val in annual_data.pct_change().dropna().items()}
         inception_year = min([int(y) for y in annual_returns.keys()]) if annual_returns else datetime.date.today().year
@@ -117,7 +117,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     current_debt_amount = initial_debt_ratio / 100.0
     current_asset_amounts = {name: (weight/100.0) for name, weight in weights_dict.items()}
     
-    equity_curve = [] # 儲存資產成長曲線數據
+    equity_curve = [] 
     is_bankrupt = False
 
     for year in valid_years:
@@ -187,14 +187,13 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     avg_annual_ret = sum(strategy_annuals.values()) / num_years if num_years > 0 else 0
     sharpe = (avg_annual_ret - RISK_FREE_RATE) / est_vol if est_vol > 0 else 0
     
-    # 💥 計算水下回撤與最大修復天數 (日級模擬逼近)
+    # 計算水下回撤與最大修復天數
     df_curve = pd.DataFrame(equity_curve)
     if not df_curve.empty and portfolio_equity > 0:
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
         df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0
         real_mdd = df_curve["水下回撤"].min()
         
-        # 估算最大修復時間
         max_recovery_years = 0
         current_drop_years = 0
         for idx, row in df_curve.iterrows():
@@ -204,7 +203,9 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
                 current_drop_years = 0
         max_recovery_days = int(max_recovery_years * 365)
     else:
-        real_mdd = est_mdd; max_recovery_days = 9999 if is_bankrupt else 0
+        # 如果沒有數據或是已經破產斷頭
+        real_mdd = -1.0 if is_bankrupt else 0.0
+        max_recovery_days = 9999 if is_bankrupt else 0
 
     calmar = cagr / abs(real_mdd) if real_mdd != 0 else 0
     type_label = "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
@@ -264,7 +265,6 @@ with st.form("create_strategy_form"):
         st.session_state.custom_strategies[strat_name] = {"name": "🎯 " + strat_name, "wts": selected_assets, "rebal": rebal_mode, "debt_mode": debt_mode}
         st.success(f"已成功加入「{strat_name}」！")
 
-# 💥 實裝：單一刪除與全刪管理區塊
 if st.session_state.custom_strategies:
     st.markdown("#### 🗑️ 管理已儲存的自訂策略")
     col_del1, col_del2, col_del3 = st.columns([2, 1, 1])
@@ -301,7 +301,6 @@ df_comp = pd.DataFrame(comp_data)
 if not df_comp.empty:
     terminal_col = [col for col in df_comp.columns if "終值倍數" in col][0]
     
-    # 加入法人的兩大新指標：卡瑪比率、最大修復天數
     cols_order = ["類型", "策略名稱", "總權重", "負債模式", "再平衡", "系統 Beta", "年化淨報酬率(CAGR)", terminal_col, "年化波動率", "最大回撤", "夏普值", "卡瑪比率", "最大修復天數"]
     df_display = df_comp[cols_order].copy()
     
@@ -317,26 +316,25 @@ if not df_comp.empty:
     
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-    # 💥 實裝功能 1：資產成長折線圖 (Portfolio Growth Line Chart)
     st.markdown("---")
-    st.subheader("📈 20年資產累積成長複利曲線 (Equity Curve)")
+    st.subheader("📈 資產累積成長複利曲線 (Equity Curve)")
     if curve_chart_data:
         df_curves = pd.DataFrame(curve_chart_data)
-        fig_curves = px.line(df_curves, x="年份", y="淨值", color="策略名稱", log_y=True) # 使用對數坐標軸更清晰
+        fig_curves = px.line(df_curves, x="年份", y="淨值", color="策略名稱", log_y=True) 
         fig_curves.update_layout(yaxis_title="資產增長倍數 (對數軸)", xaxis_title="年份", height=450)
         st.plotly_chart(fig_curves, use_container_width=True)
 
-    # 💥 實裝功能 2：水下回撤折線圖 (Drawdown Profile)
+    # 修正：將原本的 col2 改為正確的 col_g2
     col_g1, col_g2 = st.columns(2)
     with col_g1:
-        st.subheader("🛡️ 策略卡瑪比率排行 (每單位回撤帶來的利潤)")
+        st.subheader("🛡️ 策略卡瑪比率排行")
         df_chart_calmar = df_comp.sort_values(by="卡瑪比率", ascending=True)
         fig_calmar = px.bar(df_chart_calmar, x="卡瑪比率", y="策略名稱", color="類型", orientation='h', text="卡瑪比率",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
         fig_calmar.update_traces(texttemplate='%{text:.3f}', textposition='outside')
         st.plotly_chart(fig_calmar, use_container_width=True)
         
-    with col2:
+    with col_g2:
         st.subheader("⏳ 最長套牢修復期排行 (越短越好)")
         df_chart_rec = df_comp.sort_values(by="最大修復天數", ascending=False)
         fig_rec = px.bar(df_chart_rec, x="最大修復天數", y="策略名稱", color="類型", orientation='h', text="最大修復天數",
