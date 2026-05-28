@@ -40,7 +40,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (預設資產自動帶入基準 Beta)
+# 2. 初始化預設資產與策略 
 # ==========================================
 def load_default_assets():
     lib = {
@@ -74,7 +74,7 @@ if 'benchmark_strategies' not in st.session_state:
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 穩定時間軸狀態控制 (解決無法選擇 2017 之後的 Bug)
+# 3. 穩定時間軸狀態控制
 # ==========================================
 st.sidebar.markdown("### 歷史回測與分析引擎 (Path-Dependent Rebalance)")
 
@@ -94,7 +94,6 @@ for asset in active_assets:
 
 align_inception = st.sidebar.checkbox(f"🛡️ 回測起始日限制不早於最晚發行資產掛牌日 ({max_inception_date})", value=True)
 
-# 使用 session_state 來鎖定使用者選擇的日期，防止回彈
 if 'start_date' not in st.session_state:
     st.session_state.start_date = max_inception_date
 if 'end_date' not in st.session_state:
@@ -125,7 +124,6 @@ if withdraw_mode == "總資產百分比 (%)":
 else:
     withdraw_value = st.sidebar.number_input("年提領金額 (元)", min_value=0, value=600000, step=50000)
 
-# 💥 實裝功能 2：新增資產自動計量相對於 QQQ 的 Beta
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
 with st.sidebar.form("auto_fetch_form"):
@@ -137,7 +135,6 @@ with st.sidebar.form("auto_fetch_form"):
             type_map = {"原型資產 (Prototype)": "Prototype", "槓桿正2 (Leverage)": "Leverage", "防守短債 (Defensive)": "Defensive"}
             data, msg = fetch_asset_base_data(ticker_input, type_map[custom_type])
             if data: 
-                # 💥 量化核心：自動計算與 QQQ 交集時間軸的日線 Beta 值
                 calculated_beta = 1.0
                 ticker_upper = ticker_input.strip().upper()
                 if "QQQ (美股大盤)" in st.session_state.asset_library and ticker_upper != "QQQ":
@@ -160,7 +157,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 
+# 4. 核心計算引擎 (解鎖逐日高頻運算與向量化)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -191,10 +188,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     trading_days = df_returns.index
     
     if len(trading_days) > 0:
-        eom_dates = set(df_returns.groupby([df_returns.index.year, df_returns.index.month]).apply(lambda x: x.index[-1]))
         eoy_dates = set(df_returns.groupby(df_returns.index.year).apply(lambda x: x.index[-1]))
     else:
-        eom_dates, eoy_dates = set(), set()
+        eoy_dates = set()
         
     portfolio_equity = init_capital 
     current_debt_amount = (initial_debt_ratio / 100.0) * init_capital
@@ -216,10 +212,10 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
 
     for date in trading_days:
         if is_bankrupt:
-            if date in eom_dates or date == trading_days[-1]:
-                equity_curve.append({"日期": date, "淨值": 0.0, "負債": current_debt_amount})
-                reg_margin_curve.append({"日期": date, "法規維持率": 0.0})
-                bond_margin_curve.append({"日期": date, "純債維持率": 0.0})
+            # 破產後依然補齊時間軸點位
+            equity_curve.append({"日期": date, "淨值": 0.0, "負債": current_debt_amount})
+            reg_margin_curve.append({"日期": date, "法規維持率": 0.0})
+            bond_margin_curve.append({"日期": date, "純債維持率": 0.0})
             if date in eoy_dates: strategy_annuals[date.year] = -1.0
             continue
             
@@ -261,16 +257,12 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         elif current_reg_margin < 1.4 and current_debt_amount > 0: 
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_reason = "年中觸及 140% 斷頭"; bankruptcy_date = date.strftime("%Y-%m-%d")
 
-        if is_bankrupt:
-            if date in eoy_dates: strategy_annuals[date.year] = -1.0
-            continue
+        # 💥 解除封印：每天都記錄淨值與維持率 (不再只留月底)
+        equity_curve.append({"日期": date, "淨值": portfolio_equity, "負債": current_debt_amount})
+        reg_margin_curve.append({"日期": date, "法規維持率": display_reg})
+        bond_margin_curve.append({"日期": date, "純債維持率": display_bond})
             
-        if date in eom_dates or date == trading_days[-1]:
-            equity_curve.append({"日期": date, "淨值": portfolio_equity, "負債": current_debt_amount})
-            reg_margin_curve.append({"日期": date, "法規維持率": display_reg})
-            bond_margin_curve.append({"日期": date, "純債維持率": display_bond})
-            
-        if date in eoy_dates:
+        if date in eoy_dates and not is_bankrupt:
             strategy_annuals[date.year] = (portfolio_equity / prev_eoy_equity) - 1.0 if prev_eoy_equity > 0 else 0
             prev_eoy_equity = portfolio_equity
             
@@ -312,19 +304,21 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     if not df_curve.empty and portfolio_equity > 0:
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
         df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0 
+        # 💥 由於是逐日採樣，MDD 會捕捉到極限低谷
         real_mdd = df_curve["水下回撤"].min()
-        real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(12) if len(df_curve) > 1 else 0.0
+        
+        # 💥 波動率還原為標準日線年化公式 (對齊 Pure Alpha)
+        real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(252) if len(df_curve) > 1 else 0.0
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
         
-        max_recovery_months = 0
-        current_drop_months = 0
-        for idx, row in df_curve.iterrows():
-            if row["水下回撤"] < 0: current_drop_months += 1
-            else:
-                if current_drop_months > max_recovery_months: max_recovery_months = current_drop_months
-                current_drop_months = 0
-        if current_drop_months > max_recovery_months: max_recovery_months = current_drop_months
-        max_recovery_days = int(max_recovery_months * 30.4)
+        # 💥 高效能向量化運算 (Vectorized)：取代 for 迴圈，秒算最大修復天數
+        is_underwater = df_curve["水下回撤"] < 0
+        drop_groups = (~is_underwater).cumsum()[is_underwater]
+        if not drop_groups.empty:
+            max_recovery_tdays = drop_groups.value_counts().max()
+            max_recovery_days = int(max_recovery_tdays * (365.25 / 252)) # 交易日轉日曆天
+        else:
+            max_recovery_days = 0
     else:
         real_mdd = -1.0; real_vol = 0.0; sharpe = 0; max_recovery_days = 9999
 
@@ -342,7 +336,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
 # ==========================================
 # 5. 主畫面：策略建構器 
 # ==========================================
-st.title("📊 頂級 CLEC 質押策略回測戰情室 (日線級引擎)")
+st.title("📊 頂級 CLEC 質押策略回測戰情室 (法人級日線引擎)")
 
 st.subheader("🛠 建立自訂組合戰略")
 with st.form("create_strategy_form"):
@@ -407,7 +401,7 @@ all_strategies = {}
 for k, v in st.session_state.benchmark_strategies.items(): all_strategies[k] = v
 for k, v in st.session_state.custom_strategies.items(): all_strategies[v["name"]] = v
 
-with st.spinner("⏳ 日線級核心運算中，正在模擬真實歷史的每一天..."):
+with st.spinner("⏳ 日線級向量運算中，正在處理過去 20 年每一天的漲跌與維持率..."):
     for name, config in all_strategies.items():
         res = calculate_metrics(config, margin_rate, start_date, end_date, init_capital=init_capital, withdraw_mode=withdraw_mode, withdraw_value=withdraw_value)
         res["策略名稱"] = name
@@ -477,7 +471,9 @@ if not df_comp.empty:
     st.subheader("📈 實質金額複利成長曲線 (Log Scale)")
     if curve_chart_data:
         df_curves = pd.DataFrame(curve_chart_data)
-        fig_curves = px.line(df_curves, x="日期", y="淨值", color="策略名稱", log_y=True)
+        # 降採樣優化：為避免 Plotly 在瀏覽器渲染 3萬個資料點卡頓，自動對畫圖資料進行每 5 天抽樣
+        df_curves_sampled = df_curves.iloc[::5, :]
+        fig_curves = px.line(df_curves_sampled, x="日期", y="淨值", color="策略名稱", log_y=True)
         fig_curves.update_layout(yaxis_title="資產淨值 (NT$)", xaxis_title="日期", height=450)
         st.plotly_chart(fig_curves, use_container_width=True)
         
@@ -488,7 +484,8 @@ if not df_comp.empty:
         st.subheader("1. 法規維持率追蹤線 (原型+短債)")
         if reg_margin_chart_data:
             df_reg = pd.DataFrame(reg_margin_chart_data)
-            fig_reg = px.line(df_reg, x="日期", y="法規維持率", color="策略名稱")
+            df_reg_sampled = df_reg.iloc[::5, :]
+            fig_reg = px.line(df_reg_sampled, x="日期", y="法規維持率", color="策略名稱")
             fig_reg.add_hline(y=1.4, line_dash="dash", line_color="red", annotation_text="140% 斷頭線")
             fig_reg.update_layout(yaxis_tickformat='.0%', yaxis_title="維持率", xaxis_title="日期", height=400)
             fig_reg.update_yaxes(range=[0, 10])
@@ -497,7 +494,8 @@ if not df_comp.empty:
         st.subheader("2. 純債安全維持率追蹤線 (僅計短債)")
         if bond_margin_chart_data:
             df_bond = pd.DataFrame(bond_margin_chart_data)
-            fig_bond = px.line(df_bond, x="日期", y="純債維持率", color="策略名稱")
+            df_bond_sampled = df_bond.iloc[::5, :]
+            fig_bond = px.line(df_bond_sampled, x="日期", y="純債維持率", color="策略名稱")
             fig_bond.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="100% 短債枯竭線")
             fig_bond.update_layout(yaxis_tickformat='.0%', yaxis_title="純債維持率", xaxis_title="日期", height=400)
             fig_bond.update_yaxes(range=[0, 10])
