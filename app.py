@@ -320,9 +320,19 @@ with st.form("create_strategy_form"):
             st.success(f"已成功加入「{strat_name}」！你可以繼續建立下一組。")
 
 if st.session_state.custom_strategies:
-    if st.button("🗑️ 清空所有自訂策略"):
-        st.session_state.custom_strategies = {}
-        st.rerun()
+    st.markdown("#### 🗑️ 管理已儲存的自訂策略")
+    col_del1, col_del2, col_del3 = st.columns([2, 1, 1])
+    with col_del1:
+        # 下拉選單選擇要刪除的策略
+        del_target = st.selectbox("選擇要刪除的策略", list(st.session_state.custom_strategies.keys()), label_visibility="collapsed")
+    with col_del2:
+        if st.button("刪除單一策略", use_container_width=True):
+            del st.session_state.custom_strategies[del_target]
+            st.rerun()
+    with col_del3:
+        if st.button("⚠️ 全數清空", type="primary", use_container_width=True):
+            st.session_state.custom_strategies = {}
+            st.rerun()
 
 st.markdown("---")
 
