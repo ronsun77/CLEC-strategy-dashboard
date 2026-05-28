@@ -49,13 +49,13 @@ def fetch_asset_data(ticker):
             "vol": float(ann_vol), 
             "mdd": float(mdd),
             "annuals": annual_returns,
-            "type": "Leverage" if "L" in ticker or "正2" in ticker else ("Defensive" if "債" in ticker or "SGOV" in ticker else "Prototype")
+            "type": "Leverage" if "L" in ticker or "正2" in ticker else ("Defensive" if "債" in ticker or "SHY" in ticker else "Prototype")
         }, f"成功抓取 {ticker}！"
     except Exception as e:
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 背景自動初始化真實數據 (加入 SPY)
+# 2. 背景自動初始化真實數據 (SGOV 替換為歷史更悠久的 SHY)
 # ==========================================
 @st.cache_data(ttl=86400)
 def load_default_assets():
@@ -64,11 +64,11 @@ def load_default_assets():
         "現金": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}, "type": "Defensive"}
     }
     defaults = {
-        "SPY": "SPY (標普大盤)",  # 新增 SPY 作為最標準 Benchmark
+        "SPY": "SPY (標普大盤)",
         "QQQ": "QQQ (美股大盤)",
         "QLD": "QLD (美股正2)",
         "00713.TW": "00713 (台股高息)",
-        "SGOV": "SGOV (短債)"
+        "SHY": "SHY (1-3年短債)"  # 替換為 2002 年掛牌的 SHY，補齊 20 年數據
     }
     
     for ticker, display_name in defaults.items():
@@ -76,7 +76,7 @@ def load_default_assets():
         if data:
             if "QLD" in ticker: data["beta"] = 2.0; data["type"] = "Leverage"
             if "00713" in ticker: data["beta"] = 0.65; data["type"] = "Prototype"
-            if "SGOV" in ticker: data["beta"] = 0.0; data["type"] = "Defensive"
+            if "SHY" in ticker: data["beta"] = 0.0; data["type"] = "Defensive"
             if "QQQ" in ticker or "SPY" in ticker: data["type"] = "Prototype"
             lib[display_name] = data
     return lib
@@ -88,8 +88,8 @@ if 'benchmark_strategies' not in st.session_state:
     st.session_state.benchmark_strategies = {
         "純抱 SPY (標普500)": {"SPY (標普大盤)": 100.0},
         "純抱 QQQ (納斯達克)": {"QQQ (美股大盤)": 100.0},
-        "經典 CLEC 433 (無借貸)": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (短債)": 30.0},
-        "穩健 623 (資產110%)": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (短債)": 30.0}
+        "經典 CLEC 433 (無借貸)": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0},
+        "穩健 623 (資產110%)": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SHY (1-3年短債)": 30.0}
     }
 
 if 'custom_strategies' not in st.session_state:
@@ -142,7 +142,6 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type):
             
             portfolio_value *= (1 + net_year_return)
             
-            # 純抱大盤的策略，不執行複雜的再平衡
             is_pure_index = len([w for w in weights_dict.values() if w > 0]) == 1
             
             if not is_pure_index:
@@ -186,7 +185,6 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type):
     else:
         cagr = 0; sharpe = 0; portfolio_value = 1.0
     
-    # 決定顏色分類
     is_pure_index = len([w for w in weights_dict.values() if w > 0]) == 1
     type_label = "純大盤對照" if is_pure_index else "經典對照"
     
@@ -265,15 +263,14 @@ annual_chart_data = []
 
 for name, wts in st.session_state.benchmark_strategies.items():
     res = calculate_metrics(wts, margin_rate, rebalance_choice)
-    res["策略名稱"] = name
+    res["策略名稱"] = name; res["類型"] = res["類型"]
     comp_data.append(res)
     for year, ret in res["annuals"].items():
         annual_chart_data.append({"策略名稱": name, "年份": year, "報酬率": ret, "類型": res["類型"]})
 
 for name, wts in st.session_state.custom_strategies.items():
     res = calculate_metrics(wts, margin_rate, rebalance_choice)
-    res["策略名稱"] = "🎯 " + name
-    res["類型"] = "自訂戰略"
+    res["策略名稱"] = "🎯 " + name; res["類型"] = "自訂戰略"
     comp_data.append(res)
     for year, ret in res["annuals"].items():
         annual_chart_data.append({"策略名稱": "🎯 " + name, "年份": year, "報酬率": ret, "類型": "自訂戰略"})
