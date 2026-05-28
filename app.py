@@ -10,17 +10,15 @@ st.set_page_config(page_title="Pro 級質押戰略戰情室", layout="wide")
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (20年期升級版)
+# 1. 自動抓取市場數據函數 (20年期)
 # ==========================================
 def fetch_asset_data(ticker):
     try:
         ticker = ticker.strip().upper()
         
-        # 智能防呆：自動補上 .TW
         if re.match(r'^\d+[A-Z]*$', ticker) and '.TW' not in ticker and '.TWO' not in ticker:
             ticker = ticker + '.TW'
             
-        # 回測時間拉長至 20 年 (20 * 365 = 7300 天)
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=20*365)
         
@@ -34,17 +32,14 @@ def fetch_asset_data(ticker):
             
         daily_returns = close_prices.pct_change().dropna()
         
-        # 總年化報酬率
         total_return = close_prices.iloc[-1] / close_prices.iloc[0]
         years = (close_prices.index[-1] - close_prices.index[0]).days / 365.25
         ann_return = (total_return ** (1 / years)) - 1
         
-        # 波動率與最大回撤
         ann_vol = daily_returns.std() * np.sqrt(252)
         rolling_max = close_prices.cummax()
         mdd = ((close_prices / rolling_max) - 1.0).min()
         
-        # 歷年報酬率 (取全部可用的年份，不再限制5年)
         annual_data = close_prices.resample('YE').last()
         annual_returns_series = annual_data.pct_change().dropna()
         annual_returns = {str(year.year): float(val) for year, val in annual_returns_series.items()}
@@ -60,16 +55,14 @@ def fetch_asset_data(ticker):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 背景自動初始化真實數據 (不再使用假數據)
+# 2. 背景自動初始化真實數據
 # ==========================================
-@st.cache_data(ttl=86400) # 快取一天，避免重複抓取
+@st.cache_data(ttl=86400)
 def load_default_assets():
     lib = {
         "無 (不配置)": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}},
         "現金": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}}
     }
-    
-    # 定義預設需要真實抓取的標的
     defaults = {
         "QQQ": "QQQ (美股大盤)",
         "QLD": "QLD (美股正2)",
@@ -80,14 +73,12 @@ def load_default_assets():
     for ticker, display_name in defaults.items():
         data, _ = fetch_asset_data(ticker)
         if data:
-            # 針對已知 Beta 值做硬覆寫校正
             if "QLD" in ticker: data["beta"] = 2.0
             if "00713" in ticker: data["beta"] = 0.65
             if "SGOV" in ticker: data["beta"] = 0.0
             lib[display_name] = data
     return lib
 
-# 將快取的真實數據載入 Session
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
@@ -101,7 +92,7 @@ if 'custom_strategies' not in st.session_state:
     st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎 (處理 20 年交集)
+# 3. 核心計算引擎 (修復欄位與命名)
 # ==========================================
 def calculate_metrics(weights_dict, margin_rate):
     total_weight = sum(weights_dict.values())
@@ -134,7 +125,6 @@ def calculate_metrics(weights_dict, margin_rate):
                     yr_ret += asset_annuals[year] * (weight / 100.0)
                     valid_assets += 1
         
-        # 只有當該年度有資產數據時才計算，避免早期 ETF 未上市導致數據失真
         if valid_assets > 0:
             yr_ret -= (debt_ratio / 100.0) * margin_rate
             strategy_annuals[year] = yr_ret
@@ -145,8 +135,11 @@ def calculate_metrics(weights_dict, margin_rate):
     
     return {
         "總權重": total_weight, "實質負債": debt_ratio,
-        "淨報酬率": net_return, "最大回撤": est_mdd,
-        "波動率": est_vol, "夏普值": sharpe,
+        "系統 Beta": sys_beta,
+        "年化淨報酬率": net_return, 
+        "年化波動率": est_vol,
+        "最大回撤": est_mdd,
+        "夏普值": sharpe,
         "annuals": strategy_annuals
     }
 
@@ -214,6 +207,8 @@ st.markdown("---")
 # 6. 終極比較表與視覺化圖表
 # ==========================================
 st.subheader("🏆 戰略終極比較表")
+st.caption("💡 備註：此表為「靜態起始權重」預估。真實的「動態恆定維持率」會隨資產上漲持續擴張債務與複利，實質長期利潤將高於此靜態預估值。")
+
 comp_data = []
 annual_chart_data = []
 
@@ -234,44 +229,25 @@ for name, wts in st.session_state.custom_strategies.items():
 df_comp = pd.DataFrame(comp_data)
 
 if not df_comp.empty:
-    cols_order = ["類型", "策略名稱", "總權重", "實質負債", "淨報酬率", "最大回撤", "夏普值"]
+    # 補回系統 Beta 與 年化波動率
+    cols_order = ["類型", "策略名稱", "總權重", "實質負債", "系統 Beta", "年化淨報酬率", "年化波動率", "最大回撤", "夏普值"]
     df_display = df_comp[cols_order].copy()
     
     df_display["總權重"] = df_display["總權重"].apply(lambda x: f"{x:.0f}%")
     df_display["實質負債"] = df_display["實質負債"].apply(lambda x: f"{x:.0f}%")
-    df_display["淨報酬率"] = df_display["淨報酬率"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["系統 Beta"] = df_display["系統 Beta"].apply(lambda x: f"{x:.2f}")
+    df_display["年化淨報酬率"] = df_display["年化淨報酬率"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["年化波動率"] = df_display["年化波動率"].apply(lambda x: f"{x*100:.2f}%")
     df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
     df_display["夏普值"] = df_display["夏普值"].apply(lambda x: f"{x:.3f}")
     
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-    # 歷年報酬率壓力測試 (20年版)
     st.markdown("---")
     st.subheader("📆 歷年報酬率壓力測試 (最長 20 年)")
-    st.caption("備註：若某年度柱狀圖缺漏，代表該組合中部分 ETF 於當年尚未上市。")
     if annual_chart_data:
         df_annual = pd.DataFrame(annual_chart_data)
-        # 確保年份排序正確
         df_annual = df_annual.sort_values(by="年份")
         fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group")
-        fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度報酬率", xaxis_title="年份", height=500)
+        fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度淨報酬率", xaxis_title="年份", height=500)
         st.plotly_chart(fig_annual, use_container_width=True)
-        
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("🛡️ 壓力測試：最大回撤 (MDD)")
-        df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
-        fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="類型", orientation='h', text="最大回撤",
-            color_discrete_map={"經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_mdd.update_traces(texttemplate='%{text:.2%}', textposition='outside')
-        fig_mdd.update_layout(xaxis_tickformat='.0%', xaxis_title="回撤幅度")
-        st.plotly_chart(fig_mdd, use_container_width=True)
-        
-    with col2:
-        st.subheader("📈 策略效率：夏普值 (Sharpe)")
-        df_chart_sharpe = df_comp.sort_values(by="夏普值", ascending=True)
-        fig_sharpe = px.bar(df_chart_sharpe, x="夏普值", y="策略名稱", color="類型", orientation='h', text="夏普值",
-            color_discrete_map={"經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_sharpe.update_traces(texttemplate='%{text:.3f}', textposition='outside')
-        fig_sharpe.update_layout(xaxis_title="數值越高越好")
-        st.plotly_chart(fig_sharpe, use_container_width=True)
