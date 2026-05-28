@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (下載完整區間)
+# 1. 自動抓取市場數據函數 
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_base_data(ticker, asset_type):
@@ -40,7 +40,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (內建完整實戰資料庫)
+# 2. 初始化預設資產與策略 (淨化基準表)
 # ==========================================
 def load_default_assets():
     lib = {
@@ -71,34 +71,60 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
+# 💥 優化：移除多餘的 SHY 策略，聚焦 SGOV
 if 'benchmark_strategies' not in st.session_state:
     st.session_state.benchmark_strategies = {
         "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
         "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
         "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
-        "經典 CLEC 433 (買借死) (SHY)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
         "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
     }
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 💥 解除發行日封印：時間軸改由最長壽的大盤資產主導
+# 3. 💥 解耦時間軸控制：加入顯性合成代理開關
 # ==========================================
-st.sidebar.markdown("### 歷史回測與分析引擎 (Synthetic Proxy Backfilling)")
+st.sidebar.markdown("### 歷史回測與分析引擎")
 
-# 預設完全解除限制，最低可選到 1999 年
+active_assets = set()
+for strats in [st.session_state.benchmark_strategies, st.session_state.custom_strategies]:
+    for config in strats.values():
+        for asset_name, weight in config["wts"].items():
+            if weight > 0 and asset_name in st.session_state.asset_library:
+                active_assets.add(asset_name)
+
+max_inception_date = datetime.date(1999, 1, 1)
+for asset in active_assets:
+    asset_data = st.session_state.asset_library.get(asset, {})
+    inc_date = asset_data.get("inception_date", datetime.date(1999, 1, 1))
+    if inc_date > max_inception_date and asset not in ["無 (不配置)", "現金"]: 
+        max_inception_date = inc_date
+
+# 新增顯性控制開關
+enable_synthetic = st.sidebar.checkbox("🚀 啟用智能合成代理引擎 (解鎖發行日前回測)", value=False, help="啟用後，尚未掛牌的資產將自動使用歷史基準(如聯邦基金利率或QQQ)進行代理回填，允許回測跨越 2008 年金融海嘯。")
+
 min_historical_date = datetime.date(1999, 1, 4)
+min_allowed_date = min_historical_date if enable_synthetic else max_inception_date
 
 if 'start_date' not in st.session_state:
-    st.session_state.start_date = datetime.date(2005, 1, 3) # 預設大約涵蓋海嘯前夕
+    st.session_state.start_date = max_inception_date
 if 'end_date' not in st.session_state:
     st.session_state.end_date = datetime.date.today()
 
+# 防呆：確保開關切換時，時間不會超界報錯
+if st.session_state.start_date < min_allowed_date:
+    st.session_state.start_date = min_allowed_date
+if st.session_state.end_date < min_allowed_date:
+    st.session_state.end_date = min_allowed_date
+
+if not enable_synthetic:
+    st.sidebar.info(f"🔒 目前受限於最晚掛牌資產，為保證 100% 真實數據，起始日最早僅可至：{max_inception_date}")
+
 col_d1, col_d2 = st.sidebar.columns(2)
 with col_d1:
-    start_date = st.date_input("回測起始日", st.session_state.start_date, min_value=min_historical_date, max_value=datetime.date.today())
+    start_date = st.date_input("回測起始日", st.session_state.start_date, min_value=min_allowed_date, max_value=datetime.date.today())
 with col_d2:
-    end_date = st.date_input("回測結束日", st.session_state.end_date, min_value=min_historical_date, max_value=datetime.date.today())
+    end_date = st.date_input("回測結束日", st.session_state.end_date, min_value=min_allowed_date, max_value=datetime.date.today())
 
 st.session_state.start_date = start_date
 st.session_state.end_date = end_date
@@ -146,7 +172,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 💥 核心計算引擎 (全自動智能特徵回填特徵碼)
+# 4. 核心計算引擎 (無縫銜接代理技術)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -158,12 +184,10 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     initial_debt_ratio = max(0, initial_total_weight - 100.0)
     sys_beta = 0.0
     
-    # 建立以 QQQ 為基礎的 Master Timeline 基準線，防範資料切片破洞
     master_prices = st.session_state.asset_library["QQQ (美股大盤)"]["prices"]
     master_slice = master_prices.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
     trading_days = master_slice.index
     
-    # 預建每日報酬矩陣
     df_returns = pd.DataFrame(index=trading_days)
     
     for name, weight in weights_dict.items():
@@ -172,7 +196,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         asset = st.session_state.asset_library[name]
         sys_beta += asset.get("beta", 0.0) * (weight / 100.0)
         
-        # 抓取該資產在指定區間的真實日報酬率
         if name in ["無 (不配置)", "現金"] or asset["prices"].empty:
             df_returns[name] = 0.0
         else:
@@ -209,29 +232,23 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             if date in eoy_dates: strategy_annuals[date.year] = -1.0
             continue
             
-        # 💥 核心財務工程：逐日檢查發行日，未出生則啟動合成替代
         for name, amount in current_asset_amounts.items():
             if name not in st.session_state.asset_library or amount <= 0:
                 continue
             asset_info = st.session_state.asset_library[name]
             
-            # 判斷當前日期該資產是否已經誕生
             if name in ["無 (不配置)", "現金"]:
                 ret = 0.02 / 252.0
             elif date.date() >= asset_info["inception_date"]:
-                # 已發行：採用交易所真實日報酬率
                 ret = df_returns.loc[date, name]
             else:
-                # 🎯 未發行：自動啟動智能特徵回填機制
+                # 只有在啟用代理引擎時，這段邏輯才會被觸發
                 if asset_info["type"] == "Defensive":
-                    # 短債未出生：以當時短端美債利率（約年化 2.0%）平滑替代
                     ret = 0.02 / 252.0
                 elif asset_info["type"] == "Leverage":
-                    # 正2未出生：自動抓取 QQQ 當日日報酬率進行 2 倍合成，並扣除 1.2% 隱性內扣成本
                     qqq_ret = df_returns.loc[date, "QQQ (美股大盤)"] if "QQQ (美股大盤)" in df_returns.columns else 0.0
                     ret = qqq_ret * 2.0 - (0.012 / 252.0)
                 else:
-                    # 台股原型未出生：自動對標美股 QQQ 走勢
                     qqq_ret = df_returns.loc[date, "QQQ (美股大盤)"] if "QQQ (美股大盤)" in df_returns.columns else 0.0
                     ret = qqq_ret
                     
@@ -335,7 +352,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
 # ==========================================
 # 5. 主畫面：策略建構器
 # ==========================================
-st.title("📊 頂級 CLEC 質押策略回測戰情室 (智能特徵回填版)")
+st.title("📊 頂級 CLEC 質押策略回測戰情室")
 
 st.subheader("🛠 建立自訂組合戰略")
 with st.form("create_strategy_form"):
@@ -400,7 +417,7 @@ all_strategies = {}
 for k, v in st.session_state.benchmark_strategies.items(): all_strategies[k] = v
 for k, v in st.session_state.custom_strategies.items(): all_strategies[v["name"]] = v
 
-with st.spinner("⏳ 智能合成代理引擎運作中...正在回填未發行區間日線..."):
+with st.spinner("⏳ 核心引擎運作中..."):
     for name, config in all_strategies.items():
         res = calculate_metrics(config, margin_rate, start_date, end_date, init_capital=init_capital, withdraw_mode=withdraw_mode, withdraw_value=withdraw_value)
         res["策略名稱"] = name
@@ -507,9 +524,7 @@ if not df_comp.empty:
             "純抱 SPY": "#c7c7c7", 
             "純抱 QQQ": "#7f7f7f", 
             "經典 CLEC 433 (買借死)": "#1f77b4", 
-            "經典 CLEC 433 (買借死) (SHY)": "#aec7e8", 
-            "穩健 623 (恆定增貸)": "#ff7f0e",
-            "防禦 812 (恆定1000%)": "#2ca02c"
+            "穩健 623 (恆定增貸)": "#ff7f0e"
         }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
