@@ -84,7 +84,7 @@ if 'benchmark_strategies' not in st.session_state:
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎 (實裝債券核心風控邏輯)
+# 3. 核心計算引擎 (修復提領變數與綠色亂碼 Bug)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, align_inception=True, target_margin_ratio=6.0, init_capital=10000000.0, withdraw_mode="固定金額 (元)", withdraw_value=600000.0):
     weights_dict = strategy_config["wts"]
@@ -105,7 +105,8 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
             if asset.get("inception_year", 0) > max_inception_year and name not in ["無 (不配置)", "現金"]:
                 max_inception_year = asset.get("inception_year", 0)
             sys_beta += asset["beta"] * (weight / 100.0)
-            st.session_state.asset_library[name]["vol"] # 確保讀取
+            # 修復 1: 修正綠色神秘數字，確實將 vol 累加起來
+            est_vol += asset["vol"] * (weight / 100.0)
 
     valid_years = sorted([y for y in all_years if int(y) >= max_inception_year]) if align_inception and max_inception_year > 0 else sorted(all_years)
             
@@ -140,20 +141,28 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
         # 2. 利息與提領
         interest_cost = current_debt_amount * margin_rate
         current_debt_amount += interest_cost
-        withdrawal_amount = withdrawal_value if debt_mode == "買借死 (提領生活費)" else 0
+        
+        # 修復 2: 完整加回百分比提領與固定金額提領的精確判斷
+        withdrawal_amount = 0
+        if debt_mode == "買借死 (提領生活費)":
+            if withdraw_mode == "總資產百分比 (%)":
+                withdrawal_amount = sum(current_asset_amounts.values()) * withdraw_value
+            else:
+                withdrawal_amount = withdraw_value
+                
         current_debt_amount += withdrawal_amount
         total_withdrawn += withdrawal_amount
             
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 3. 💥 精確風控計算：區分法規與純債擔保品
+        # 3. 精確風控計算：區分法規與純債擔保品
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
         bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Defensive"])
         
         # 計算法規維持率
         current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
-        # 計算純債維持率 (解耦股票波動，看生活費債務的安全度)
+        # 計算純債維持率 (解耦股票波動)
         current_bond_margin = bond_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         
         display_reg = min(current_reg_margin, 10.0)
@@ -214,7 +223,6 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     if not df_curve.empty and portfolio_equity > 0:
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
         real_mdd = ((df_curve["淨值"] / df_curve["最高淨值"]) - 1.0).min()
-        # 重新逼近真實資產波動度
         real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(1) if len(df_curve) > 1 else est_vol
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
     else:
@@ -225,7 +233,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     return {
         "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, "系統 Beta": sys_beta, 
         "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
-        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": 0, # 由外部曲線推導
+        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": 0, 
         "累計提領生活費": total_withdrawn, "狀態": f"破產 ({bankruptcy_year} {bankruptcy_reason})" if is_bankrupt else "安全存活",
         "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
@@ -235,7 +243,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
 # 4. 介面渲染：側邊欄 (預設參數全面對齊劇本)
 # ==========================================
 st.sidebar.title("⚙️ 全局設定與參數")
-new_lookback = st.sidebar.slider("歷史資料抓取範圍 (年)", 5, 30, 20, 1) # 預設一開始就是 20 年拉
+new_lookback = st.sidebar.slider("歷史資料抓取範圍 (年)", 5, 30, 20, 1) 
 if new_lookback != st.session_state.lookback_years:
     st.session_state.lookback_years = new_lookback; st.cache_data.clear()
     st.session_state.asset_library = load_default_assets(new_lookback); st.rerun()
@@ -264,11 +272,10 @@ with st.sidebar.form("auto_fetch_form"):
 # ==========================================
 # 5. 主畫面：策略建構器 (支援無限策略疊加)
 # ==========================================
-st.title(" 頂級 CLEC 質押策略回測戰情室")
+st.title("📊 頂級 CLEC 質押策略回測戰情室")
 
 st.subheader("🛠 建立自訂組合戰略")
 with st.form("create_strategy_form"):
-    # 預設再平衡模式直接切換為 CLEC 聰明再平衡
     strat_name = st.text_input("自訂策略名稱", f"策略模式 {len(st.session_state.custom_strategies)+1}")
     col_r, col_d = st.columns(2)
     with col_r: rebal_mode = st.selectbox("再平衡模組", ["CLEC", "傳統定時", "不執行"], index=0)
@@ -325,7 +332,6 @@ for name, config in all_strategies.items():
 df_comp = pd.DataFrame(comp_data)
 
 if not df_comp.empty:
-    # 補回所有遺失的靈魂指標：Beta、年化波動率、夏普值、卡瑪比率
     cols_order = [
         "策略名稱", "負債模式", "再平衡", "狀態", 
         "系統 Beta", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", 
