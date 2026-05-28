@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (保留完整日線資料)
+# 1. 自動抓取市場數據函數
 # ==========================================
 def fetch_asset_data(ticker, lookback_years=20):
     try:
@@ -84,7 +84,7 @@ if 'benchmark_strategies' not in st.session_state:
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎 
+# 3. 核心計算引擎
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, align_inception=True, target_margin_ratio=6.0, init_capital=10000000.0, withdraw_mode="固定金額 (元)", withdraw_value=600000.0):
     weights_dict = strategy_config["wts"]
@@ -140,21 +140,28 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
         # 2. 利息與提領
         interest_cost = current_debt_amount * margin_rate
         current_debt_amount += interest_cost
-        withdrawal_amount = withdrawal_value if debt_mode == "買借死 (提領生活費)" else 0
+        
+        withdrawal_amount = 0
+        if debt_mode == "買借死 (提領生活費)":
+            if withdraw_mode == "總資產百分比 (%)":
+                withdrawal_amount = sum(current_asset_amounts.values()) * withdraw_value
+            else:
+                withdrawal_amount = withdraw_value
+                
         current_debt_amount += withdrawal_amount
         total_withdrawn += withdrawal_amount
             
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 3. 風控計算
+        # 3. 精確風控計算
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
         bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Defensive"])
         
-        current_margin_ratio = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
+        current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         current_bond_margin = bond_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         
-        display_reg = min(current_margin_ratio, 10.0)
+        display_reg = min(current_reg_margin, 10.0)
         display_bond = min(current_bond_margin, 10.0)
         
         if portfolio_equity <= 0:
@@ -164,7 +171,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
             bond_margin_curve.append({"年份": year, "純債維持率": display_bond})
             continue
             
-        if current_margin_ratio < 1.4 and current_debt_amount > 0: 
+        if current_reg_margin < 1.4 and current_debt_amount > 0: 
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_reason = "法規維持率低於140%斷頭"; bankruptcy_year = year
             equity_curve.append({"年份": year, "淨值": 0.0, "負債": current_debt_amount})
             reg_margin_curve.append({"年份": year, "法規維持率": display_reg})
@@ -196,7 +203,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
 
         # 5. 恆定維持率模組
         if debt_mode == "恆定維持率 (增貸再投資)":
-            if legal_collateral > 0 and current_margin_ratio > target_margin_ratio:
+            if legal_collateral > 0 and current_reg_margin > target_margin_ratio:
                 new_loan = (legal_collateral / target_margin_ratio) - current_debt_amount
                 if new_loan > 0:
                     current_debt_amount += new_loan
@@ -207,11 +214,13 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     num_years = len(valid_years)
     cagr = ((portfolio_equity / init_capital) ** (1 / num_years)) - 1 if num_years > 0 and not is_bankrupt and portfolio_equity > 0 else 0
     
+    # 計算波動率與最大回撤 (修復 KeyError)
     df_curve = pd.DataFrame(equity_curve)
     if not df_curve.empty and portfolio_equity > 0:
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
-        real_mdd = ((df_curve["淨值"] / df_curve["最高淨值"]) - 1.0).min()
-        real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(1) if len(df_curve) > 1 else est_vol
+        df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0 # <--- 這裡確實加回來了
+        real_mdd = df_curve["水下回撤"].min()
+        real_vol = df_curve["淨值"].pct_change().std() if len(df_curve) > 1 else est_vol
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
         
         max_recovery_years = 0
@@ -231,7 +240,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     return {
         "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, "系統 Beta": sys_beta, 
         "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
-        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, # 💥 修復：確實綁定變數
+        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, 
         "累計提領生活費": total_withdrawn, "狀態": f"破產 ({bankruptcy_year} {bankruptcy_reason})" if is_bankrupt else "安全存活",
         "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
@@ -261,7 +270,7 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
 with st.sidebar.form("auto_fetch_form"):
-    ticker_input = st.text_input("輸入股票/ETF代號")
+    ticker_input = st.text_input("輸入股票/ETF代號 (防呆自動補.TW)")
     if st.form_submit_button("抓取並新增") and ticker_input:
         with st.spinner("真實市場連線中..."):
             data, msg = fetch_asset_data(ticker_input, st.session_state.lookback_years)
@@ -382,7 +391,6 @@ if not df_comp.empty:
         df_chart_rec = df_comp.sort_values(by="最大修復天數", ascending=False)
         fig_rec = px.bar(df_chart_rec, x="最大修復天數", y="策略名稱", color="類型", orientation='h', text="最大修復天數",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        # 💥 修復：正確顯示天數文字
         df_display_rec_text = df_chart_rec["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
         fig_rec.update_traces(text=df_display_rec_text, textposition='outside')
         st.plotly_chart(fig_rec, use_container_width=True)
@@ -415,3 +423,14 @@ if not df_comp.empty:
             fig_bond.update_layout(yaxis_tickformat='.0%', yaxis_title="純債維持率", xaxis_title="年份", height=400)
             fig_bond.update_yaxes(range=[0, 10])
             st.plotly_chart(fig_bond, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("📆 歷年淨報酬率大亂鬥")
+    if annual_chart_data:
+        df_annual = pd.DataFrame(annual_chart_data).sort_values(by="年份")
+        color_map = {"純抱 SPY": "#c7c7c7", "純抱 QQQ": "#7f7f7f", "經典 CLEC 433 (買借死)": "#1f77b4", "穩健 623 (恆定增貸)": "#ff7f0e"}
+        custom_colors = px.colors.sequential.Reds[3:] 
+        for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
+        fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group", color_discrete_map=color_map)
+        fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度淨報酬率", xaxis_title="年份", height=450)
+        st.plotly_chart(fig_annual, use_container_width=True)
