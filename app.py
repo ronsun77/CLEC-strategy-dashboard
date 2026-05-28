@@ -317,13 +317,30 @@ with st.form("create_strategy_form"):
         st.success(f"已成功加入「{strat_name}」！您可以建立下一組策略進行多元對比。")
 
 if st.session_state.custom_strategies:
-    st.markdown("#### 🗑 管理已儲存的自訂策略")
+    st.markdown("#### ⚙️ 管理與檢視自訂策略")
+    
+    # 💥 新增：自訂策略 X 光機 (顯示配比明細)
+    with st.expander("🔍 點擊查看所有自訂策略的詳細配比", expanded=True):
+        for strat_name, config in st.session_state.custom_strategies.items():
+            # 將權重轉化為易讀的字串，過濾掉權重為 0 的資產
+            wts_str = " + ".join([f"{k.split(' ')[0]} ({v}%)" for k, v in config["wts"].items() if v > 0])
+            # 如果有設定目標維持率，則顯示出來
+            margin_info = f" ｜ 目標維持率: {config.get('target_margin', 6.0) * 100:.0f}%" if config['debt_mode'] == "恆定維持率 (增貸再投資)" else ""
+            
+            st.info(f"**{strat_name}**\n\n👉 配比：`{wts_str}`\n\n👉 設定：{config['rebal']} ｜ {config['debt_mode']}{margin_info}")
+
+    # 原本的刪除管理區塊
     col_del1, col_del2, col_del3 = st.columns([2, 1, 1])
-    with col_del1: del_target = st.selectbox("選擇要刪除的策略", list(st.session_state.custom_strategies.keys()), label_visibility="collapsed")
+    with col_del1: 
+        del_target = st.selectbox("選擇要刪除的策略", list(st.session_state.custom_strategies.keys()), label_visibility="collapsed")
     with col_del2: 
-        if st.button("刪除單一策略", use_container_width=True): del st.session_state.custom_strategies[del_target]; st.rerun()
+        if st.button("刪除單一策略", use_container_width=True): 
+            del st.session_state.custom_strategies[del_target]
+            st.rerun()
     with col_del3:
-        if st.button("⚠️ 全數清空", type="primary", use_container_width=True): st.session_state.custom_strategies = {}; st.rerun()
+        if st.button("⚠️ 全數清空", type="primary", use_container_width=True): 
+            st.session_state.custom_strategies = {}
+            st.rerun()
 
 st.markdown("---")
 
