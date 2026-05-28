@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 
+# 1. 自動抓取市場數據函數 (精確矩陣運算)
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_base_data(ticker, asset_type):
@@ -40,19 +40,27 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 
+# 2. 初始化預設資產與策略 (全新擴充核心資產庫)
 # ==========================================
 def load_default_assets():
     lib = {
         "無 (不配置)": {"prices": pd.Series(dtype=float), "inception_date": datetime.date(1990, 1, 1), "beta": 0.0, "type": "None"},
         "現金": {"prices": pd.Series(dtype=float), "inception_date": datetime.date(1990, 1, 1), "beta": 0.0, "type": "Defensive"}
     }
+    # 💥 直接內建實戰核心資產群，解耦字串硬編碼分類
     defaults = [
         ("QQQ", "QQQ (美股大盤)", "Prototype", 1.0),
         ("SPY", "SPY (標普大盤)", "Prototype", 1.0),
         ("QLD", "QLD (美股正2)", "Leverage", 2.0),
+        ("0050.TW", "0050 (台股大盤)", "Prototype", 1.0),
+        ("00662.TW", "00662 (NAS原型)", "Prototype", 1.0),
         ("00713.TW", "00713 (台股高息)", "Prototype", 0.65),
-        ("SHY", "SHY (1-3年短債)", "Defensive", 0.0)
+        ("00631L.TW", "00631L (台股正2)", "Leverage", 2.0),
+        ("00670L.TW", "00670L (美股正2)", "Leverage", 2.0),
+        ("SGOV", "SGOV (美股超短債)", "Defensive", 0.0),
+        ("SHY", "SHY (1-3年短債)", "Defensive", 0.0),
+        ("00865B.TW", "00865B (台股短債)", "Defensive", 0.0),
+        ("00859B.TW", "00859B (台股投資級債)", "Defensive", 0.0)
     ]
     for ticker, display_name, a_type, beta in defaults:
         data, _ = fetch_asset_base_data(ticker, a_type)
@@ -64,12 +72,14 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
+# 💥 經典對照組同步重構：預設採用 SGOV，獨立分流 SHY 策略
 if 'benchmark_strategies' not in st.session_state:
     st.session_state.benchmark_strategies = {
         "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
         "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
-        "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
-        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
+        "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
+        "經典 CLEC 433 (買借死) (SHY)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
+        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
     }
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
@@ -127,7 +137,7 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
 with st.sidebar.form("auto_fetch_form"):
-    ticker_input = st.text_input("輸入股票/ETF代號 (如: 0050, BND, NVDA)")
+    ticker_input = st.text_input("輸入股票/ETF代號 (如: BND, NVDA)")
     custom_type = st.selectbox("核心資產屬性分類", ["原型資產 (Prototype)", "槓桿正2 (Leverage)", "防守短債 (Defensive)"])
     
     if st.form_submit_button("抓取並新增") and ticker_input:
@@ -157,7 +167,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (解鎖逐日高頻運算與向量化)
+# 4. 核心計算引擎 
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -212,7 +222,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
 
     for date in trading_days:
         if is_bankrupt:
-            # 破產後依然補齊時間軸點位
             equity_curve.append({"日期": date, "淨值": 0.0, "負債": current_debt_amount})
             reg_margin_curve.append({"日期": date, "法規維持率": 0.0})
             bond_margin_curve.append({"日期": date, "純債維持率": 0.0})
@@ -257,7 +266,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         elif current_reg_margin < 1.4 and current_debt_amount > 0: 
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_reason = "年中觸及 140% 斷頭"; bankruptcy_date = date.strftime("%Y-%m-%d")
 
-        # 💥 解除封印：每天都記錄淨值與維持率 (不再只留月底)
         equity_curve.append({"日期": date, "淨值": portfolio_equity, "負債": current_debt_amount})
         reg_margin_curve.append({"日期": date, "法規維持率": display_reg})
         bond_margin_curve.append({"日期": date, "純債維持率": display_bond})
@@ -304,19 +312,15 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     if not df_curve.empty and portfolio_equity > 0:
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
         df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0 
-        # 💥 由於是逐日採樣，MDD 會捕捉到極限低谷
         real_mdd = df_curve["水下回撤"].min()
-        
-        # 💥 波動率還原為標準日線年化公式 (對齊 Pure Alpha)
         real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(252) if len(df_curve) > 1 else 0.0
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
         
-        # 💥 高效能向量化運算 (Vectorized)：取代 for 迴圈，秒算最大修復天數
         is_underwater = df_curve["水下回撤"] < 0
         drop_groups = (~is_underwater).cumsum()[is_underwater]
         if not drop_groups.empty:
             max_recovery_tdays = drop_groups.value_counts().max()
-            max_recovery_days = int(max_recovery_tdays * (365.25 / 252)) # 交易日轉日曆天
+            max_recovery_days = int(max_recovery_tdays * (365.25 / 252))
         else:
             max_recovery_days = 0
     else:
@@ -401,7 +405,7 @@ all_strategies = {}
 for k, v in st.session_state.benchmark_strategies.items(): all_strategies[k] = v
 for k, v in st.session_state.custom_strategies.items(): all_strategies[v["name"]] = v
 
-with st.spinner("⏳ 日線級向量運算中，正在處理過去 20 年每一天的漲跌與維持率..."):
+with st.spinner("⏳ 日線級向量運算中，正在處理過去歷史的每一天..."):
     for name, config in all_strategies.items():
         res = calculate_metrics(config, margin_rate, start_date, end_date, init_capital=init_capital, withdraw_mode=withdraw_mode, withdraw_value=withdraw_value)
         res["策略名稱"] = name
@@ -471,7 +475,6 @@ if not df_comp.empty:
     st.subheader("📈 實質金額複利成長曲線 (Log Scale)")
     if curve_chart_data:
         df_curves = pd.DataFrame(curve_chart_data)
-        # 降採樣優化：為避免 Plotly 在瀏覽器渲染 3萬個資料點卡頓，自動對畫圖資料進行每 5 天抽樣
         df_curves_sampled = df_curves.iloc[::5, :]
         fig_curves = px.line(df_curves_sampled, x="日期", y="淨值", color="策略名稱", log_y=True)
         fig_curves.update_layout(yaxis_title="資產淨值 (NT$)", xaxis_title="日期", height=450)
@@ -505,7 +508,14 @@ if not df_comp.empty:
     st.subheader("📆 歷年淨報酬率大亂鬥")
     if annual_chart_data:
         df_annual = pd.DataFrame(annual_chart_data).sort_values(by="年份")
-        color_map = {"純抱 SPY": "#c7c7c7", "純抱 QQQ": "#7f7f7f", "經典 CLEC 433 (買借死)": "#1f77b4", "穩健 623 (恆定增貸)": "#ff7f0e", "防禦 812 (恆定1000%)": "#2ca02c"}
+        color_map = {
+            "純抱 SPY": "#c7c7c7", 
+            "純抱 QQQ": "#7f7f7f", 
+            "經典 CLEC 433 (買借死)": "#1f77b4", 
+            "經典 CLEC 433 (買借死) (SHY)": "#aec7e8", 
+            "穩健 623 (恆定增貸)": "#ff7f0e",
+            "防禦 812 (恆定1000%)": "#2ca02c"
+        }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
         fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group", color_discrete_map=color_map)
