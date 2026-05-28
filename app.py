@@ -84,7 +84,7 @@ if 'benchmark_strategies' not in st.session_state:
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎 (修復提領變數與綠色亂碼 Bug)
+# 3. 核心計算引擎 
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, align_inception=True, target_margin_ratio=6.0, init_capital=10000000.0, withdraw_mode="固定金額 (元)", withdraw_value=600000.0):
     weights_dict = strategy_config["wts"]
@@ -105,7 +105,6 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
             if asset.get("inception_year", 0) > max_inception_year and name not in ["無 (不配置)", "現金"]:
                 max_inception_year = asset.get("inception_year", 0)
             sys_beta += asset["beta"] * (weight / 100.0)
-            # 修復 1: 修正綠色神秘數字，確實將 vol 累加起來
             est_vol += asset["vol"] * (weight / 100.0)
 
     valid_years = sorted([y for y in all_years if int(y) >= max_inception_year]) if align_inception and max_inception_year > 0 else sorted(all_years)
@@ -115,8 +114,8 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     current_asset_amounts = {name: (weight/100.0) * init_capital for name, weight in weights_dict.items()}
     
     equity_curve = [] 
-    reg_margin_curve = [] # 法規維持率曲線
-    bond_margin_curve = [] # 純債維持率曲線
+    reg_margin_curve = [] 
+    bond_margin_curve = [] 
     total_withdrawn = 0.0
     is_bankrupt = False
     bankruptcy_reason = "存活"
@@ -141,31 +140,21 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
         # 2. 利息與提領
         interest_cost = current_debt_amount * margin_rate
         current_debt_amount += interest_cost
-        
-        # 修復 2: 完整加回百分比提領與固定金額提領的精確判斷
-        withdrawal_amount = 0
-        if debt_mode == "買借死 (提領生活費)":
-            if withdraw_mode == "總資產百分比 (%)":
-                withdrawal_amount = sum(current_asset_amounts.values()) * withdraw_value
-            else:
-                withdrawal_amount = withdraw_value
-                
+        withdrawal_amount = withdrawal_value if debt_mode == "買借死 (提領生活費)" else 0
         current_debt_amount += withdrawal_amount
         total_withdrawn += withdrawal_amount
             
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 3. 精確風控計算：區分法規與純債擔保品
+        # 3. 風控計算
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
         bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Defensive"])
         
-        # 計算法規維持率
-        current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
-        # 計算純債維持率 (解耦股票波動)
+        current_margin_ratio = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         current_bond_margin = bond_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         
-        display_reg = min(current_reg_margin, 10.0)
+        display_reg = min(current_margin_ratio, 10.0)
         display_bond = min(current_bond_margin, 10.0)
         
         if portfolio_equity <= 0:
@@ -175,7 +164,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
             bond_margin_curve.append({"年份": year, "純債維持率": display_bond})
             continue
             
-        if current_reg_margin < 1.4 and current_debt_amount > 0: 
+        if current_margin_ratio < 1.4 and current_debt_amount > 0: 
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_reason = "法規維持率低於140%斷頭"; bankruptcy_year = year
             equity_curve.append({"年份": year, "淨值": 0.0, "負債": current_debt_amount})
             reg_margin_curve.append({"年份": year, "法規維持率": display_reg})
@@ -207,7 +196,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
 
         # 5. 恆定維持率模組
         if debt_mode == "恆定維持率 (增貸再投資)":
-            if legal_collateral > 0 and current_reg_margin > target_margin_ratio:
+            if legal_collateral > 0 and current_margin_ratio > target_margin_ratio:
                 new_loan = (legal_collateral / target_margin_ratio) - current_debt_amount
                 if new_loan > 0:
                     current_debt_amount += new_loan
@@ -218,29 +207,38 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     num_years = len(valid_years)
     cagr = ((portfolio_equity / init_capital) ** (1 / num_years)) - 1 if num_years > 0 and not is_bankrupt and portfolio_equity > 0 else 0
     
-    # 計算波動率與最大回撤
     df_curve = pd.DataFrame(equity_curve)
     if not df_curve.empty and portfolio_equity > 0:
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
         real_mdd = ((df_curve["淨值"] / df_curve["最高淨值"]) - 1.0).min()
         real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(1) if len(df_curve) > 1 else est_vol
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
+        
+        max_recovery_years = 0
+        current_drop_years = 0
+        for idx, row in df_curve.iterrows():
+            if row["水下回撤"] < 0: current_drop_years += 1
+            else:
+                if current_drop_years > max_recovery_years: max_recovery_years = current_drop_years
+                current_drop_years = 0
+        if current_drop_years > max_recovery_years: max_recovery_years = current_drop_years
+        max_recovery_days = int(max_recovery_years * 365)
     else:
-        real_mdd = -1.0; real_vol = est_vol; sharpe = 0
+        real_mdd = -1.0; real_vol = est_vol; sharpe = 0; max_recovery_days = 9999
 
     calmar = cagr / abs(real_mdd) if real_mdd != 0 else 0
     
     return {
         "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, "系統 Beta": sys_beta, 
         "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
-        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": 0, 
+        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, # 💥 修復：確實綁定變數
         "累計提領生活費": total_withdrawn, "狀態": f"破產 ({bankruptcy_year} {bankruptcy_reason})" if is_bankrupt else "安全存活",
         "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
     }
 
 # ==========================================
-# 4. 介面渲染：側邊欄 (預設參數全面對齊劇本)
+# 4. 介面渲染：側邊欄 
 # ==========================================
 st.sidebar.title("⚙️ 全局設定與參數")
 new_lookback = st.sidebar.slider("歷史資料抓取範圍 (年)", 5, 30, 20, 1) 
@@ -270,7 +268,7 @@ with st.sidebar.form("auto_fetch_form"):
             if data: st.session_state.asset_library[f"{ticker_input.upper()} (自訂)"] = data; st.success(msg)
 
 # ==========================================
-# 5. 主畫面：策略建構器 (支援無限策略疊加)
+# 5. 主畫面：策略建構器 
 # ==========================================
 st.title("📊 頂級 CLEC 質押策略回測戰情室")
 
@@ -308,11 +306,12 @@ if st.session_state.custom_strategies:
 st.markdown("---")
 
 # ==========================================
-# 6. 終極比較表與多維度風險追蹤
+# 6. 終極比較表與四大神級圖表渲染
 # ==========================================
 st.subheader("🏆 戰略終極比較表")
 
 comp_data = []
+annual_chart_data = []
 curve_chart_data = []
 reg_margin_chart_data = []
 bond_margin_chart_data = []
@@ -325,6 +324,7 @@ for name, config in all_strategies.items():
     res = calculate_metrics(config, margin_rate, align_inception, init_capital=init_capital, withdraw_mode=withdraw_mode, withdraw_value=withdraw_value)
     res["策略名稱"] = name
     comp_data.append(res)
+    for year, ret in res["annuals"].items(): annual_chart_data.append({"策略名稱": name, "年份": year, "報酬率": ret, "類型": res["類型"]})
     for pt in res["curve"]: curve_chart_data.append({"策略名稱": name, "年份": pt["年份"], "淨值": pt["淨值"]})
     for pt in res["reg_margin_curve"]: reg_margin_chart_data.append({"策略名稱": name, "年份": pt["年份"], "法規維持率": pt["法規維持率"]})
     for pt in res["bond_margin_curve"]: bond_margin_chart_data.append({"策略名稱": name, "年份": pt["年份"], "純債維持率": pt["純債維持率"]})
@@ -335,7 +335,7 @@ if not df_comp.empty:
     cols_order = [
         "策略名稱", "負債模式", "再平衡", "狀態", 
         "系統 Beta", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", 
-        "夏普值", "卡瑪比率", "最終淨值", "累計提領生活費"
+        "夏普值", "卡瑪比率", "最大修復天數", "最終淨值", "累計提領生活費"
     ]
     df_display = df_comp[cols_order].copy()
     
@@ -345,22 +345,22 @@ if not df_comp.empty:
     df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
     df_display["夏普值"] = df_display["夏普值"].apply(lambda x: f"{x:.3f}")
     df_display["卡瑪比率"] = df_display["卡瑪比率"].apply(lambda x: f"{x:.3f}")
+    df_display["最大修復天數"] = df_display["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
     df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
     df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
     
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-    # 圖表區 1：淨值與回撤
     st.markdown("---")
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
+    col1, col2 = st.columns(2)
+    with col1:
         st.subheader("💰 最終資產淨值排行 (NT$)")
         df_chart_multiple = df_comp.sort_values(by="最終淨值", ascending=True)
         fig_mult = px.bar(df_chart_multiple, x="最終淨值", y="策略名稱", color="類型", orientation='h', text="最終淨值",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
         fig_mult.update_traces(texttemplate='NT$ %{text:,.0f}', textposition='outside')
         st.plotly_chart(fig_mult, use_container_width=True)
-    with col_g2:
+    with col2:
         st.subheader("🛡 壓力測試：最大回撤 (MDD)")
         df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
         fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="類型", orientation='h', text="最大回撤",
@@ -369,22 +369,36 @@ if not df_comp.empty:
         fig_mdd.update_layout(xaxis_tickformat='.0%')
         st.plotly_chart(fig_mdd, use_container_width=True)
 
-    # 圖表區 2：成長複利曲線
+    col3, col4 = st.columns(2)
+    with col3:
+        st.subheader("🎯 策略卡瑪比率 (每單位回撤帶來的利潤)")
+        df_chart_calmar = df_comp.sort_values(by="卡瑪比率", ascending=True)
+        fig_calmar = px.bar(df_chart_calmar, x="卡瑪比率", y="策略名稱", color="類型", orientation='h', text="卡瑪比率",
+            color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
+        fig_calmar.update_traces(texttemplate='%{text:.3f}', textposition='outside')
+        st.plotly_chart(fig_calmar, use_container_width=True)
+    with col4:
+        st.subheader("⏳ 最長套牢修復期 (越短越好)")
+        df_chart_rec = df_comp.sort_values(by="最大修復天數", ascending=False)
+        fig_rec = px.bar(df_chart_rec, x="最大修復天數", y="策略名稱", color="類型", orientation='h', text="最大修復天數",
+            color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
+        # 💥 修復：正確顯示天數文字
+        df_display_rec_text = df_chart_rec["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
+        fig_rec.update_traces(text=df_display_rec_text, textposition='outside')
+        st.plotly_chart(fig_rec, use_container_width=True)
+
     st.subheader("📈 實質金額複利成長曲線 (Log Scale)")
     if curve_chart_data:
         df_curves = pd.DataFrame(curve_chart_data)
         fig_curves = px.line(df_curves, x="年份", y="淨值", color="策略名稱", log_y=True)
         fig_curves.update_layout(yaxis_title="資產淨值 (NT$)", xaxis_title="年份", height=450)
         st.plotly_chart(fig_curves, use_container_width=True)
-
-    # 圖表區 3：雙軌維持率風險追蹤圖
+        
     st.markdown("---")
     st.subheader("🚨 雙軌風險防線追蹤圖 (維持率觀測)")
-    
     col_m1, col_m2 = st.columns(2)
     with col_m1:
         st.subheader("1. 法規維持率追蹤線 (原型+短債)")
-        st.caption("台股法規認定的真實維持率走勢，跌破 140% 紅線即觸發斷頭。")
         if reg_margin_chart_data:
             df_reg = pd.DataFrame(reg_margin_chart_data)
             fig_reg = px.line(df_reg, x="年份", y="法規維持率", color="策略名稱")
@@ -392,10 +406,8 @@ if not df_comp.empty:
             fig_reg.update_layout(yaxis_tickformat='.0%', yaxis_title="維持率", xaxis_title="年份", height=400)
             fig_reg.update_yaxes(range=[0, 10])
             st.plotly_chart(fig_reg, use_container_width=True)
-            
     with col_m2:
         st.subheader("2. 純債安全維持率追蹤線 (僅計短債)")
-        st.caption("🎯 依據您的戰略思維核心：假設股票暴跌歸零時，光靠無傷的『短債擔保品』能否獨立扛住生活費負債？跌破 100% 代表生活費已透支完短債護城河。")
         if bond_margin_chart_data:
             df_bond = pd.DataFrame(bond_margin_chart_data)
             fig_bond = px.line(df_bond, x="年份", y="純債維持率", color="策略名稱")
