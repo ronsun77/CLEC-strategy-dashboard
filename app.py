@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (解耦硬編碼分類，改由參數注入)
+# 1. 自動抓取市場數據函數 
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_data_v4(ticker, asset_type, beta):
@@ -41,7 +41,7 @@ def fetch_asset_data_v4(ticker, asset_type, beta):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (精確架構分類)
+# 2. 初始化預設資產與策略
 # ==========================================
 def load_default_assets():
     lib = {
@@ -113,7 +113,6 @@ if withdraw_mode == "總資產百分比 (%)":
 else:
     withdraw_value = st.sidebar.number_input("年提領金額 (元)", min_value=0, value=600000, step=50000)
 
-# 💥 升級版：側邊欄新增資產控制面板 (徹底解決屬性黑洞)
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
 with st.sidebar.form("auto_fetch_form"):
@@ -128,7 +127,7 @@ with st.sidebar.form("auto_fetch_form"):
             if data: 
                 st.session_state.asset_library[f"{ticker_input.upper()} (自訂)"] = data
                 st.success(msg)
-                st.rerun() # 💥 強制即時同步主畫面下拉選單
+                st.rerun()
 
 # ==========================================
 # 4. 核心計算引擎 
@@ -215,7 +214,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 💥 風控核心：精確依照使用者的自訂分類計算擔保品
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
         bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Defensive"])
         
@@ -343,11 +341,12 @@ with st.form("create_strategy_form"):
             "target_margin": target_margin_input / 100.0 
         }
         st.success(f"已成功加入「{strat_name}」！")
-        st.rerun() # 💥 強制即時刷新主畫面比較表
+        st.rerun()
 
 if st.session_state.custom_strategies:
     st.markdown("#### ⚙️ 管理與檢視自訂策略")
-    with St.expander("🔍 點擊查看所有自訂策略的詳細配比", expanded=True):
+    # 💥 已修復小寫 st
+    with st.expander("🔍 點擊查看所有自訂策略的詳細配比", expanded=True):
         for s_name, config in st.session_state.custom_strategies.items():
             wts_str = " + ".join([f"{k.split(' ')[0]} ({v}%)" for k, v in config["wts"].items() if v > 0])
             margin_info = f" ｜ 目標維持率: {config.get('target_margin', 6.0) * 100:.0f}%" if config['debt_mode'] == "恆定維持率 (增貸再投資)" else ""
