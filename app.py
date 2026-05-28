@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (保留完整日線資料)
+# 1. 自動抓取市場數據函數 
 # ==========================================
 def fetch_asset_data(ticker, lookback_years=20):
     try:
@@ -74,22 +74,25 @@ def load_default_assets(lookback=20):
 if 'lookback_years' not in st.session_state: st.session_state.lookback_years = 20
 if 'asset_library' not in st.session_state: st.session_state.asset_library = load_default_assets(st.session_state.lookback_years)
 
+# 💥 更新：將 target_margin 參數寫入預設策略中
 if 'benchmark_strategies' not in st.session_state:
     st.session_state.benchmark_strategies = {
-        "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無"},
-        "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無"},
-        "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)"},
-        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)"}
+        "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
+        "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
+        "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
+        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SHY (1-3年短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
     }
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎
+# 3. 核心計算引擎 (解除鎖定目標維持率)
 # ==========================================
-def calculate_metrics(strategy_config, margin_rate, align_inception=True, target_margin_ratio=6.0, init_capital=10000000.0, withdraw_mode="固定金額 (元)", withdraw_value=600000.0):
+def calculate_metrics(strategy_config, margin_rate, align_inception=True, init_capital=10000000.0, withdraw_mode="固定金額 (元)", withdraw_value=600000.0):
     weights_dict = strategy_config["wts"]
     rebalance_type = strategy_config["rebal"]
     debt_mode = strategy_config["debt_mode"]
+    # 💥 從策略設定中讀取該策略專屬的目標維持率
+    target_margin_ratio = strategy_config.get("target_margin", 6.0) 
     
     initial_total_weight = sum(weights_dict.values())
     initial_debt_ratio = max(0, initial_total_weight - 100.0)
@@ -113,7 +116,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     current_debt_amount = (initial_debt_ratio / 100.0) * init_capital
     current_asset_amounts = {name: (weight/100.0) * init_capital for name, weight in weights_dict.items()}
     
-    strategy_annuals = {} # <--- 就是這個資料表在上一版回傳時漏掉了！
+    strategy_annuals = {}
     equity_curve = [] 
     reg_margin_curve = [] 
     bond_margin_curve = [] 
@@ -132,14 +135,12 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
             
         year_start_assets = sum(current_asset_amounts.values())
         
-        # 1. 資產增長
         for name, amount in current_asset_amounts.items():
             if name in st.session_state.asset_library and amount > 0:
                 ret = st.session_state.asset_library[name].get("annuals", {}).get(year, 0)
                 if ret == 0 and st.session_state.asset_library[name].get("type") == "Defensive": ret = 0.02
                 current_asset_amounts[name] = amount * (1 + ret)
                 
-        # 2. 利息與提領
         interest_cost = current_debt_amount * margin_rate
         current_debt_amount += interest_cost
         
@@ -156,7 +157,6 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 3. 精確風控計算
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
         bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Defensive"])
         
@@ -189,7 +189,6 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
         reg_margin_curve.append({"年份": year, "法規維持率": display_reg})
         bond_margin_curve.append({"年份": year, "純債維持率": display_bond})
         
-        # 4. 再平衡模組
         if rebalance_type == "CLEC":
             for name, amount in current_asset_amounts.items():
                 if st.session_state.asset_library[name].get("type") == "Leverage":
@@ -208,7 +207,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
             total_assets = sum(current_asset_amounts.values())
             for name, weight in weights_dict.items(): current_asset_amounts[name] = total_assets * (weight/sum(weights_dict.values()))
 
-        # 5. 恆定維持率模組
+        # 💥 解除鎖定的恆定增貸邏輯
         if debt_mode == "恆定維持率 (增貸再投資)":
             if legal_collateral > 0 and current_reg_margin > target_margin_ratio:
                 new_loan = (legal_collateral / target_margin_ratio) - current_debt_amount
@@ -224,7 +223,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     df_curve = pd.DataFrame(equity_curve)
     if not df_curve.empty and portfolio_equity > 0:
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
-        df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0
+        df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0 
         real_mdd = df_curve["水下回撤"].min()
         real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(1) if len(df_curve) > 1 else est_vol
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
@@ -248,13 +247,12 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
         "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
         "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, 
         "累計提領生活費": total_withdrawn, "狀態": f"破產 ({bankruptcy_year} {bankruptcy_reason})" if is_bankrupt else "安全存活",
-        "annuals": strategy_annuals, # 💥 這次確實加回來了！
-        "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
+        "annuals": strategy_annuals, "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
     }
 
 # ==========================================
-# 4. 介面渲染：側邊欄 
+# 4. 介面渲染：側邊欄
 # ==========================================
 st.sidebar.title("⚙️ 全局設定與參數")
 new_lookback = st.sidebar.slider("歷史資料抓取範圍 (年)", 5, 30, 20, 1) 
@@ -284,16 +282,18 @@ with st.sidebar.form("auto_fetch_form"):
             if data: st.session_state.asset_library[f"{ticker_input.upper()} (自訂)"] = data; st.success(msg)
 
 # ==========================================
-# 5. 主畫面：策略建構器 
+# 5. 主畫面：策略建構器 (加入目標維持率控制)
 # ==========================================
 st.title("📊 頂級 CLEC 質押策略回測戰情室")
 
 st.subheader("🛠 建立自訂組合戰略")
 with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", f"策略模式 {len(st.session_state.custom_strategies)+1}")
-    col_r, col_d = st.columns(2)
+    
+    col_r, col_d, col_m = st.columns(3)
     with col_r: rebal_mode = st.selectbox("再平衡模組", ["CLEC", "傳統定時", "不執行"], index=0)
     with col_d: debt_mode = st.selectbox("負債運用模組", ["買借死 (提領生活費)", "恆定維持率 (增貸再投資)", "無"], index=0)
+    with col_m: target_margin_input = st.number_input("目標維持率 (%)", min_value=140, max_value=2000, value=600, step=50, help="僅在『恆定維持率』模式下生效")
     
     st.write("精確輸入資產權重 (%)：")
     cols = st.columns(5)
@@ -307,7 +307,13 @@ with st.form("create_strategy_form"):
             if asset != "無 (不配置)" and weight > 0: selected_assets[asset] = selected_assets.get(asset, 0) + weight
 
     if st.form_submit_button("📥 儲存策略並加入比較表") and selected_assets:
-        st.session_state.custom_strategies[strat_name] = {"name": "🎯 " + strat_name, "wts": selected_assets, "rebal": rebal_mode, "debt_mode": debt_mode}
+        st.session_state.custom_strategies[strat_name] = {
+            "name": "🎯 " + strat_name, 
+            "wts": selected_assets, 
+            "rebal": rebal_mode, 
+            "debt_mode": debt_mode,
+            "target_margin": target_margin_input / 100.0 # 轉換為小數儲存
+        }
         st.success(f"已成功加入「{strat_name}」！您可以建立下一組策略進行多元對比。")
 
 if st.session_state.custom_strategies:
