@@ -40,7 +40,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (淨化基準表)
+# 2. 初始化預設資產與策略 (強制淨化基準表)
 # ==========================================
 def load_default_assets():
     lib = {
@@ -71,18 +71,18 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
-# 💥 優化：移除多餘的 SHY 策略，聚焦 SGOV
-if 'benchmark_strategies' not in st.session_state:
-    st.session_state.benchmark_strategies = {
-        "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
-        "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
-        "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
-        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
-    }
+# 💥 暴力破解解法：直接無條件覆蓋，徹底刪除殘留在快取裡的 SHY 策略
+st.session_state.benchmark_strategies = {
+    "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
+    "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
+    "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
+    "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
+}
+
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 💥 解耦時間軸控制：加入顯性合成代理開關
+# 3. 💥 解鎖日曆綁架：智慧攔截控制
 # ==========================================
 st.sidebar.markdown("### 歷史回測與分析引擎")
 
@@ -100,34 +100,32 @@ for asset in active_assets:
     if inc_date > max_inception_date and asset not in ["無 (不配置)", "現金"]: 
         max_inception_date = inc_date
 
-# 新增顯性控制開關
 enable_synthetic = st.sidebar.checkbox("🚀 啟用智能合成代理引擎 (解鎖發行日前回測)", value=False, help="啟用後，尚未掛牌的資產將自動使用歷史基準(如聯邦基金利率或QQQ)進行代理回填，允許回測跨越 2008 年金融海嘯。")
-
-min_historical_date = datetime.date(1999, 1, 4)
-min_allowed_date = min_historical_date if enable_synthetic else max_inception_date
 
 if 'start_date' not in st.session_state:
     st.session_state.start_date = max_inception_date
 if 'end_date' not in st.session_state:
     st.session_state.end_date = datetime.date.today()
 
-# 防呆：確保開關切換時，時間不會超界報錯
-if st.session_state.start_date < min_allowed_date:
-    st.session_state.start_date = min_allowed_date
-if st.session_state.end_date < min_allowed_date:
-    st.session_state.end_date = min_allowed_date
-
-if not enable_synthetic:
-    st.sidebar.info(f"🔒 目前受限於最晚掛牌資產，為保證 100% 真實數據，起始日最早僅可至：{max_inception_date}")
-
+# 💥 完全解鎖 st.date_input 的限制，讓使用者可以自由點選日曆
 col_d1, col_d2 = st.sidebar.columns(2)
 with col_d1:
-    start_date = st.date_input("回測起始日", st.session_state.start_date, min_value=min_allowed_date, max_value=datetime.date.today())
+    start_date = st.date_input("回測起始日", value=st.session_state.start_date, max_value=datetime.date.today())
 with col_d2:
-    end_date = st.date_input("回測結束日", st.session_state.end_date, min_value=min_allowed_date, max_value=datetime.date.today())
+    end_date = st.date_input("回測結束日", value=st.session_state.end_date, max_value=datetime.date.today())
 
 st.session_state.start_date = start_date
 st.session_state.end_date = end_date
+
+# 💥 改用「後發制人」的智慧攔截：如果選的日期太早且未開合成，直接跳出錯誤並暫停運算
+min_allowed_date = datetime.date(1999, 1, 4) if enable_synthetic else max_inception_date
+
+if start_date < min_allowed_date:
+    if not enable_synthetic:
+        st.sidebar.error(f"⚠️ **未啟用合成引擎**\\n\\n為保證 100% 真實數據，目前配置中最年輕的資產為 {max_inception_date} 發行。\\n\\n👉 **解法 1**：請勾選上方「🚀 啟用智能合成代理引擎」。\\n👉 **解法 2**：請將回測起始日調整至 {max_inception_date} 之後。")
+    else:
+        st.sidebar.error(f"⚠️ 系統極限數據最早僅支援至 1999 年。")
+    st.stop() # 停止程式往下跑，等待使用者調整
 
 st.sidebar.markdown("---")
 margin_rate = st.sidebar.number_input("質押借貸利率 (%)", 0.0, 10.0, 2.5, 0.1) / 100.0
@@ -242,7 +240,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             elif date.date() >= asset_info["inception_date"]:
                 ret = df_returns.loc[date, name]
             else:
-                # 只有在啟用代理引擎時，這段邏輯才會被觸發
                 if asset_info["type"] == "Defensive":
                     ret = 0.02 / 252.0
                 elif asset_info["type"] == "Leverage":
