@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數
+# 1. 自動抓取市場數據函數 (保留完整日線資料)
 # ==========================================
 def fetch_asset_data(ticker, lookback_years=20):
     try:
@@ -113,6 +113,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     current_debt_amount = (initial_debt_ratio / 100.0) * init_capital
     current_asset_amounts = {name: (weight/100.0) * init_capital for name, weight in weights_dict.items()}
     
+    strategy_annuals = {} # <--- 就是這個資料表在上一版回傳時漏掉了！
     equity_curve = [] 
     reg_margin_curve = [] 
     bond_margin_curve = [] 
@@ -123,6 +124,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
 
     for year in valid_years:
         if is_bankrupt:
+            strategy_annuals[year] = 0.0
             equity_curve.append({"年份": year, "淨值": 0.0, "負債": current_debt_amount})
             reg_margin_curve.append({"年份": year, "法規維持率": 0.0})
             bond_margin_curve.append({"年份": year, "純債維持率": 0.0})
@@ -166,6 +168,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
         
         if portfolio_equity <= 0:
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_reason = "淨值歸零"; bankruptcy_year = year
+            strategy_annuals[year] = -1.0
             equity_curve.append({"年份": year, "淨值": 0.0, "負債": current_debt_amount})
             reg_margin_curve.append({"年份": year, "法規維持率": display_reg})
             bond_margin_curve.append({"年份": year, "純債維持率": display_bond})
@@ -173,11 +176,15 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
             
         if current_reg_margin < 1.4 and current_debt_amount > 0: 
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_reason = "法規維持率低於140%斷頭"; bankruptcy_year = year
+            strategy_annuals[year] = -1.0
             equity_curve.append({"年份": year, "淨值": 0.0, "負債": current_debt_amount})
             reg_margin_curve.append({"年份": year, "法規維持率": display_reg})
             bond_margin_curve.append({"年份": year, "純債維持率": display_bond})
             continue
             
+        net_year_return = (portfolio_equity - (year_start_assets - (current_debt_amount - interest_cost - withdrawal_amount))) / (year_start_assets - (current_debt_amount - interest_cost - withdrawal_amount)) if year_start_assets > 0 else 0
+        strategy_annuals[year] = net_year_return
+        
         equity_curve.append({"年份": year, "淨值": portfolio_equity, "負債": current_debt_amount})
         reg_margin_curve.append({"年份": year, "法規維持率": display_reg})
         bond_margin_curve.append({"年份": year, "純債維持率": display_bond})
@@ -214,13 +221,12 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
     num_years = len(valid_years)
     cagr = ((portfolio_equity / init_capital) ** (1 / num_years)) - 1 if num_years > 0 and not is_bankrupt and portfolio_equity > 0 else 0
     
-    # 計算波動率與最大回撤 (修復 KeyError)
     df_curve = pd.DataFrame(equity_curve)
     if not df_curve.empty and portfolio_equity > 0:
         df_curve["最高淨值"] = df_curve["淨值"].cummax()
-        df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0 # <--- 這裡確實加回來了
+        df_curve["水下回撤"] = (df_curve["淨值"] / df_curve["最高淨值"]) - 1.0
         real_mdd = df_curve["水下回撤"].min()
-        real_vol = df_curve["淨值"].pct_change().std() if len(df_curve) > 1 else est_vol
+        real_vol = df_curve["淨值"].pct_change().std() * np.sqrt(1) if len(df_curve) > 1 else est_vol
         sharpe = (cagr - RISK_FREE_RATE) / real_vol if real_vol > 0 else 0
         
         max_recovery_years = 0
@@ -242,6 +248,7 @@ def calculate_metrics(strategy_config, margin_rate, align_inception=True, target
         "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
         "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, 
         "累計提領生活費": total_withdrawn, "狀態": f"破產 ({bankruptcy_year} {bankruptcy_reason})" if is_bankrupt else "安全存活",
+        "annuals": strategy_annuals, # 💥 這次確實加回來了！
         "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
     }
