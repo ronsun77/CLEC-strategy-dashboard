@@ -10,23 +10,23 @@ st.set_page_config(page_title="Pro 級質押戰略戰情室", layout="wide")
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (Yahoo Finance)
+# 1. 自動抓取市場數據函數 (20年期升級版)
 # ==========================================
 def fetch_asset_data(ticker):
     try:
         ticker = ticker.strip().upper()
         
-        # 智能防呆：如果是純數字且沒有 .TW/.TWO，自動補上 .TW (台股)
+        # 智能防呆：自動補上 .TW
         if re.match(r'^\d+[A-Z]*$', ticker) and '.TW' not in ticker and '.TWO' not in ticker:
             ticker = ticker + '.TW'
             
-        # 設定回溯期間：過去 10 年，以涵蓋完整多空循環
+        # 回測時間拉長至 20 年 (20 * 365 = 7300 天)
         end_date = datetime.date.today()
-        start_date = end_date - datetime.timedelta(days=10*365)
+        start_date = end_date - datetime.timedelta(days=20*365)
         
         data = yf.download(ticker, start=start_date, end=end_date, progress=False)
         if data.empty:
-            return None, f"找不到代號 {ticker} 的數據，請確認標的名稱。"
+            return None, f"找不到 {ticker} 的數據。"
         
         close_prices = data['Close']
         if isinstance(close_prices, pd.DataFrame):
@@ -34,26 +34,24 @@ def fetch_asset_data(ticker):
             
         daily_returns = close_prices.pct_change().dropna()
         
-        # 計算年化報酬率 (CAGR)
+        # 總年化報酬率
         total_return = close_prices.iloc[-1] / close_prices.iloc[0]
         years = (close_prices.index[-1] - close_prices.index[0]).days / 365.25
         ann_return = (total_return ** (1 / years)) - 1
         
-        # 計算年化波動率 & 最大回撤
+        # 波動率與最大回撤
         ann_vol = daily_returns.std() * np.sqrt(252)
         rolling_max = close_prices.cummax()
         mdd = ((close_prices / rolling_max) - 1.0).min()
         
-        # 計算歷年年度報酬率 (取最近 5 年畫圖用)
-        # resample('YE') 會取每年的最後一個交易日
+        # 歷年報酬率 (取全部可用的年份，不再限制5年)
         annual_data = close_prices.resample('YE').last()
         annual_returns_series = annual_data.pct_change().dropna()
         annual_returns = {str(year.year): float(val) for year, val in annual_returns_series.items()}
-        annual_returns = dict(list(annual_returns.items())[-5:]) # 只保留最近5年
         
         return {
             "ret": float(ann_return), 
-            "beta": 1.0, # 簡化預設
+            "beta": 1.0, 
             "vol": float(ann_vol), 
             "mdd": float(mdd),
             "annuals": annual_returns
@@ -62,20 +60,36 @@ def fetch_asset_data(ticker):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化 Session State (包含預設模擬數據)
+# 2. 背景自動初始化真實數據 (不再使用假數據)
 # ==========================================
-if 'asset_library' not in st.session_state:
-    st.session_state.asset_library = {
+@st.cache_data(ttl=86400) # 快取一天，避免重複抓取
+def load_default_assets():
+    lib = {
         "無 (不配置)": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}},
-        "QQQ (美股大盤)": {"ret": 0.15, "beta": 1.0, "vol": 0.18, "mdd": -0.33, 
-                       "annuals": {"2019": 0.38, "2020": 0.47, "2021": 0.27, "2022": -0.33, "2023": 0.54}},
-        "QLD (美股正2)": {"ret": 0.26, "beta": 2.0, "vol": 0.36, "mdd": -0.60, 
-                       "annuals": {"2019": 0.80, "2020": 1.10, "2021": 0.50, "2022": -0.60, "2023": 1.20}},
-        "00713 (台股高息)": {"ret": 0.10, "beta": 0.65, "vol": 0.12, "mdd": -0.15, 
-                        "annuals": {"2019": 0.20, "2020": 0.10, "2021": 0.30, "2022": -0.07, "2023": 0.46}},
-        "SGOV (短債)": {"ret": 0.045, "beta": 0.0, "vol": 0.02, "mdd": -0.01, 
-                     "annuals": {"2019": 0.02, "2020": 0.01, "2021": 0.0, "2022": 0.01, "2023": 0.05}}
+        "現金": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}}
     }
+    
+    # 定義預設需要真實抓取的標的
+    defaults = {
+        "QQQ": "QQQ (美股大盤)",
+        "QLD": "QLD (美股正2)",
+        "00713.TW": "00713 (台股高息)",
+        "SGOV": "SGOV (短債)"
+    }
+    
+    for ticker, display_name in defaults.items():
+        data, _ = fetch_asset_data(ticker)
+        if data:
+            # 針對已知 Beta 值做硬覆寫校正
+            if "QLD" in ticker: data["beta"] = 2.0
+            if "00713" in ticker: data["beta"] = 0.65
+            if "SGOV" in ticker: data["beta"] = 0.0
+            lib[display_name] = data
+    return lib
+
+# 將快取的真實數據載入 Session
+if 'asset_library' not in st.session_state:
+    st.session_state.asset_library = load_default_assets()
 
 if 'benchmark_strategies' not in st.session_state:
     st.session_state.benchmark_strategies = {
@@ -87,7 +101,7 @@ if 'custom_strategies' not in st.session_state:
     st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎
+# 3. 核心計算引擎 (處理 20 年交集)
 # ==========================================
 def calculate_metrics(weights_dict, margin_rate):
     total_weight = sum(weights_dict.values())
@@ -97,12 +111,10 @@ def calculate_metrics(weights_dict, margin_rate):
     strategy_annuals = {}
     all_years = set()
     
-    # 收集所有存在的年份
     for name, weight in weights_dict.items():
         if name in st.session_state.asset_library and weight > 0:
             all_years.update(st.session_state.asset_library[name].get("annuals", {}).keys())
             
-    # 計算各項加權指標
     for name, weight in weights_dict.items():
         if name in st.session_state.asset_library and weight > 0:
             asset = st.session_state.asset_library[name]
@@ -112,14 +124,20 @@ def calculate_metrics(weights_dict, margin_rate):
             est_vol += asset["vol"] * w_pct
             est_mdd += asset.get("mdd", 0) * w_pct 
             
-    # 計算每年的加權報酬率 (扣除質押利息)
     for year in sorted(all_years):
         yr_ret = 0
+        valid_assets = 0
         for name, weight in weights_dict.items():
             if name in st.session_state.asset_library and weight > 0:
-                yr_ret += st.session_state.asset_library[name].get("annuals", {}).get(year, 0) * (weight / 100.0)
-        yr_ret -= (debt_ratio / 100.0) * margin_rate
-        strategy_annuals[year] = yr_ret
+                asset_annuals = st.session_state.asset_library[name].get("annuals", {})
+                if year in asset_annuals:
+                    yr_ret += asset_annuals[year] * (weight / 100.0)
+                    valid_assets += 1
+        
+        # 只有當該年度有資產數據時才計算，避免早期 ETF 未上市導致數據失真
+        if valid_assets > 0:
+            yr_ret -= (debt_ratio / 100.0) * margin_rate
+            strategy_annuals[year] = yr_ret
             
     debt_cost = (debt_ratio / 100.0) * margin_rate
     net_return = asset_ret - debt_cost
@@ -133,24 +151,22 @@ def calculate_metrics(weights_dict, margin_rate):
     }
 
 # ==========================================
-# 4. 側邊欄：智能抓取與資產庫
+# 4. 介面渲染：側邊欄
 # ==========================================
 st.sidebar.title("⚙️ 系統設定與資產庫")
 margin_rate = st.sidebar.number_input("質押借貸利率 (%)", 0.0, 10.0, 2.5, 0.1) / 100.0
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
-st.sidebar.caption("純數字代碼 (如 006208) 系統會自動轉為台股格式。")
 
 with st.sidebar.form("auto_fetch_form"):
-    ticker_input = st.text_input("輸入股票/ETF代號")
+    ticker_input = st.text_input("輸入股票/ETF代號 (支援 20 年回測)")
     fetch_btn = st.form_submit_button("自動抓取並新增")
     
     if fetch_btn and ticker_input:
-        with st.spinner(f"正在分析資料..."):
+        with st.spinner(f"正在分析 {ticker_input} 歷史數據..."):
             data, msg = fetch_asset_data(ticker_input)
             if data:
-                # 為了顯示美觀，將輸入的代號作為顯示名稱
                 display_name = f"{ticker_input.upper()} (自訂)"
                 st.session_state.asset_library[display_name] = data
                 st.success(msg)
@@ -167,13 +183,11 @@ with st.sidebar.expander("查看當前資產庫參數"):
 # ==========================================
 # 5. 主畫面：策略建構器
 # ==========================================
-st.title("📊 頂級質押戰略戰情室")
+st.title("📊 頂級質押戰略戰情室 (20年回測版)")
 
 st.subheader("🛠️ 建立新的自訂戰略")
 with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", "我的新戰略")
-    st.write("精確輸入資產權重 (%)，加總超過 100% 系統將自動視為質押借款：")
-    
     cols = st.columns(5)
     selected_assets = {}
     asset_opts = list(st.session_state.asset_library.keys())
@@ -203,7 +217,6 @@ st.subheader("🏆 戰略終極比較表")
 comp_data = []
 annual_chart_data = []
 
-# 處理經典策略
 for name, wts in st.session_state.benchmark_strategies.items():
     res = calculate_metrics(wts, margin_rate)
     res["策略名稱"] = name; res["類型"] = "經典對照"
@@ -211,7 +224,6 @@ for name, wts in st.session_state.benchmark_strategies.items():
     for year, ret in res["annuals"].items():
         annual_chart_data.append({"策略名稱": name, "年份": year, "報酬率": ret, "類型": "經典對照"})
 
-# 處理自訂策略
 for name, wts in st.session_state.custom_strategies.items():
     res = calculate_metrics(wts, margin_rate)
     res["策略名稱"] = "🎯 " + name; res["類型"] = "自訂戰略"
@@ -233,8 +245,19 @@ if not df_comp.empty:
     
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
+    # 歷年報酬率壓力測試 (20年版)
+    st.markdown("---")
+    st.subheader("📆 歷年報酬率壓力測試 (最長 20 年)")
+    st.caption("備註：若某年度柱狀圖缺漏，代表該組合中部分 ETF 於當年尚未上市。")
+    if annual_chart_data:
+        df_annual = pd.DataFrame(annual_chart_data)
+        # 確保年份排序正確
+        df_annual = df_annual.sort_values(by="年份")
+        fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group")
+        fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度報酬率", xaxis_title="年份", height=500)
+        st.plotly_chart(fig_annual, use_container_width=True)
+        
     col1, col2 = st.columns(2)
-    
     with col1:
         st.subheader("🛡️ 壓力測試：最大回撤 (MDD)")
         df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
@@ -252,12 +275,3 @@ if not df_comp.empty:
         fig_sharpe.update_traces(texttemplate='%{text:.3f}', textposition='outside')
         fig_sharpe.update_layout(xaxis_title="數值越高越好")
         st.plotly_chart(fig_sharpe, use_container_width=True)
-
-    # 繪製年度報酬率對比圖
-    st.markdown("---")
-    st.subheader("📆 歷年報酬率壓力測試 (近 5 年)")
-    if annual_chart_data:
-        df_annual = pd.DataFrame(annual_chart_data)
-        fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group")
-        fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度報酬率", xaxis_title="年份")
-        st.plotly_chart(fig_annual, use_container_width=True)
