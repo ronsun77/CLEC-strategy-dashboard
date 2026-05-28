@@ -55,7 +55,7 @@ def fetch_asset_data(ticker):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 背景自動初始化真實數據
+# 2. 背景自動初始化真實數據 (加入 SPY)
 # ==========================================
 @st.cache_data(ttl=86400)
 def load_default_assets():
@@ -64,6 +64,7 @@ def load_default_assets():
         "現金": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}, "type": "Defensive"}
     }
     defaults = {
+        "SPY": "SPY (標普大盤)",  # 新增 SPY 作為最標準 Benchmark
         "QQQ": "QQQ (美股大盤)",
         "QLD": "QLD (美股正2)",
         "00713.TW": "00713 (台股高息)",
@@ -76,7 +77,7 @@ def load_default_assets():
             if "QLD" in ticker: data["beta"] = 2.0; data["type"] = "Leverage"
             if "00713" in ticker: data["beta"] = 0.65; data["type"] = "Prototype"
             if "SGOV" in ticker: data["beta"] = 0.0; data["type"] = "Defensive"
-            if "QQQ" in ticker: data["type"] = "Prototype"
+            if "QQQ" in ticker or "SPY" in ticker: data["type"] = "Prototype"
             lib[display_name] = data
     return lib
 
@@ -85,8 +86,10 @@ if 'asset_library' not in st.session_state:
 
 if 'benchmark_strategies' not in st.session_state:
     st.session_state.benchmark_strategies = {
-        "經典 CLEC 433": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (短債)": 30.0},
-        "穩健 623 (防禦質押)": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (短債)": 30.0}
+        "純抱 SPY (標普500)": {"SPY (標普大盤)": 100.0},
+        "純抱 QQQ (納斯達克)": {"QQQ (美股大盤)": 100.0},
+        "經典 CLEC 433 (無借貸)": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (短債)": 30.0},
+        "穩健 623 (資產110%)": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (短債)": 30.0}
     }
 
 if 'custom_strategies' not in st.session_state:
@@ -139,36 +142,40 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type):
             
             portfolio_value *= (1 + net_year_return)
             
-            if rebalance_type == "傳統定時再平衡":
-                current_weights = {name: weight/100.0 for name, weight in weights_dict.items()}
-                current_debt = initial_debt_ratio
-            elif rebalance_type == "CLEC 聰明再平衡":
-                for name, ret in asset_performances.items():
-                    asset_type = st.session_state.asset_library[name].get("type", "")
-                    if asset_type == "Leverage":
-                        if ret > 0:
-                            profit_amount = current_weights[name] * ret * 0.3
-                            current_weights[name] -= profit_amount
-                            for d_name in current_weights.keys():
-                                if st.session_state.asset_library[d_name].get("type") == "Defensive":
-                                    current_weights[d_name] += profit_amount
-                                    break
-                        elif ret < 0:
-                            for d_name in current_weights.keys():
-                                if st.session_state.asset_library[d_name].get("type") == "Defensive":
-                                    rescue_amount = current_weights[d_name] * 0.02
-                                    current_weights[d_name] -= rescue_amount
-                                    current_weights[name] += rescue_amount
-                                    break
-                total_w = sum(current_weights.values())
-                if total_w > 0:
-                    current_weights = {k: v/total_w for k, v in current_weights.items()}
-            elif rebalance_type == "不執行再平衡":
-                for name in current_weights.keys():
-                    current_weights[name] *= (1 + asset_performances[name])
-                total_w = sum(current_weights.values())
-                if total_w > 0:
-                    current_weights = {k: v/total_w for k, v in current_weights.items()}
+            # 純抱大盤的策略，不執行複雜的再平衡
+            is_pure_index = len([w for w in weights_dict.values() if w > 0]) == 1
+            
+            if not is_pure_index:
+                if rebalance_type == "傳統定時再平衡":
+                    current_weights = {name: weight/100.0 for name, weight in weights_dict.items()}
+                    current_debt = initial_debt_ratio
+                elif rebalance_type == "CLEC 聰明再平衡":
+                    for name, ret in asset_performances.items():
+                        asset_type = st.session_state.asset_library[name].get("type", "")
+                        if asset_type == "Leverage":
+                            if ret > 0:
+                                profit_amount = current_weights[name] * ret * 0.3
+                                current_weights[name] -= profit_amount
+                                for d_name in current_weights.keys():
+                                    if st.session_state.asset_library[d_name].get("type") == "Defensive":
+                                        current_weights[d_name] += profit_amount
+                                        break
+                            elif ret < 0:
+                                for d_name in current_weights.keys():
+                                    if st.session_state.asset_library[d_name].get("type") == "Defensive":
+                                        rescue_amount = current_weights[d_name] * 0.02
+                                        current_weights[d_name] -= rescue_amount
+                                        current_weights[name] += rescue_amount
+                                        break
+                    total_w = sum(current_weights.values())
+                    if total_w > 0:
+                        current_weights = {k: v/total_w for k, v in current_weights.items()}
+                elif rebalance_type == "不執行再平衡":
+                    for name in current_weights.keys():
+                        current_weights[name] *= (1 + asset_performances[name])
+                    total_w = sum(current_weights.values())
+                    if total_w > 0:
+                        current_weights = {k: v/total_w for k, v in current_weights.items()}
 
     num_years = len(strategy_annuals)
     
@@ -179,11 +186,16 @@ def calculate_metrics(weights_dict, margin_rate, rebalance_type):
     else:
         cagr = 0; sharpe = 0; portfolio_value = 1.0
     
+    # 決定顏色分類
+    is_pure_index = len([w for w in weights_dict.values() if w > 0]) == 1
+    type_label = "純大盤對照" if is_pure_index else "經典對照"
+    
     return {
         "總權重": initial_total_weight, "實質負債": initial_debt_ratio,
         "系統 Beta": sys_beta, "年化淨報酬率(CAGR)": cagr, 
         "20年終值倍數": portfolio_value, "年化波動率": est_vol,
-        "最大回撤": est_mdd, "夏普值": sharpe, "annuals": strategy_annuals
+        "最大回撤": est_mdd, "夏普值": sharpe, "annuals": strategy_annuals,
+        "類型": type_label
     }
 
 # ==========================================
@@ -253,14 +265,15 @@ annual_chart_data = []
 
 for name, wts in st.session_state.benchmark_strategies.items():
     res = calculate_metrics(wts, margin_rate, rebalance_choice)
-    res["策略名稱"] = name; res["類型"] = "經典對照"
+    res["策略名稱"] = name
     comp_data.append(res)
     for year, ret in res["annuals"].items():
-        annual_chart_data.append({"策略名稱": name, "年份": year, "報酬率": ret, "類型": "經典對照"})
+        annual_chart_data.append({"策略名稱": name, "年份": year, "報酬率": ret, "類型": res["類型"]})
 
 for name, wts in st.session_state.custom_strategies.items():
     res = calculate_metrics(wts, margin_rate, rebalance_choice)
-    res["策略名稱"] = "🎯 " + name; res["類型"] = "自訂戰略"
+    res["策略名稱"] = "🎯 " + name
+    res["類型"] = "自訂戰略"
     comp_data.append(res)
     for year, ret in res["annuals"].items():
         annual_chart_data.append({"策略名稱": "🎯 " + name, "年份": year, "報酬率": ret, "類型": "自訂戰略"})
@@ -287,7 +300,7 @@ if not df_comp.empty:
         st.subheader("💰 複利終值倍數 (越高越好)")
         df_chart_multiple = df_comp.sort_values(by="20年終值倍數", ascending=True)
         fig_mult = px.bar(df_chart_multiple, x="20年終值倍數", y="策略名稱", color="類型", orientation='h', text="20年終值倍數",
-            color_discrete_map={"經典對照": "#54A24B", "自訂戰略": "#E45756"})
+            color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
         fig_mult.update_traces(texttemplate='%{text:.1f}x', textposition='outside')
         st.plotly_chart(fig_mult, use_container_width=True)
         
@@ -295,19 +308,23 @@ if not df_comp.empty:
         st.subheader("🛡️ 壓力測試：最大回撤 (MDD)")
         df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
         fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="類型", orientation='h', text="最大回撤",
-            color_discrete_map={"經典對照": "#54A24B", "自訂戰略": "#E45756"})
+            color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
         fig_mdd.update_traces(texttemplate='%{text:.2%}', textposition='outside')
         fig_mdd.update_layout(xaxis_tickformat='.0%')
         st.plotly_chart(fig_mdd, use_container_width=True)
 
-    # 完整補回：歷年報酬率壓力測試圖表
     st.markdown("---")
     st.subheader("📆 歷年淨報酬率壓力測試 (最長 20 年)")
-    st.caption("✅ 觀察 2008 與 2022 年的柱子，你會發現防禦型質押雖然在牛市略遜一籌，但在股災年的抗跌韌性。")
     if annual_chart_data:
         df_annual = pd.DataFrame(annual_chart_data)
         df_annual = df_annual.sort_values(by="年份")
         fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group",
-                            color_discrete_map={"經典 CLEC 433": "#1f77b4", "穩健 623 (防禦質押)": "#ff7f0e"})
+                            color_discrete_map={
+                                "純抱 SPY (標普500)": "#c7c7c7",
+                                "純抱 QQQ (納斯達克)": "#7f7f7f",
+                                "經典 CLEC 433 (無借貸)": "#1f77b4", 
+                                "穩健 623 (資產110%)": "#ff7f0e",
+                                "🎯 我的新戰略": "#E45756"
+                            })
         fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度淨報酬率", xaxis_title="年份", height=500)
         st.plotly_chart(fig_annual, use_container_width=True)
