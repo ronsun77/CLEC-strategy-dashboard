@@ -15,7 +15,6 @@ RISK_FREE_RATE = 0.04
 def fetch_asset_data(ticker):
     try:
         ticker = ticker.strip().upper()
-        
         if re.match(r'^\d+[A-Z]*$', ticker) and '.TW' not in ticker and '.TWO' not in ticker:
             ticker = ticker + '.TW'
             
@@ -32,14 +31,17 @@ def fetch_asset_data(ticker):
             
         daily_returns = close_prices.pct_change().dropna()
         
+        # 總年化報酬率
         total_return = close_prices.iloc[-1] / close_prices.iloc[0]
         years = (close_prices.index[-1] - close_prices.index[0]).days / 365.25
         ann_return = (total_return ** (1 / years)) - 1
         
+        # 波動率與最大回撤
         ann_vol = daily_returns.std() * np.sqrt(252)
         rolling_max = close_prices.cummax()
         mdd = ((close_prices / rolling_max) - 1.0).min()
         
+        # 歷年報酬率
         annual_data = close_prices.resample('YE').last()
         annual_returns_series = annual_data.pct_change().dropna()
         annual_returns = {str(year.year): float(val) for year, val in annual_returns_series.items()}
@@ -49,7 +51,8 @@ def fetch_asset_data(ticker):
             "beta": 1.0, 
             "vol": float(ann_vol), 
             "mdd": float(mdd),
-            "annuals": annual_returns
+            "annuals": annual_returns,
+            "type": "Leverage" if "L" in ticker or "正2" in ticker else ("Defensive" if "債" in ticker or "SGOV" in ticker else "Prototype")
         }, f"成功抓取 {ticker}！"
     except Exception as e:
         return None, f"抓取失敗: {str(e)}"
@@ -60,8 +63,8 @@ def fetch_asset_data(ticker):
 @st.cache_data(ttl=86400)
 def load_default_assets():
     lib = {
-        "無 (不配置)": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}},
-        "現金": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}}
+        "無 (不配置)": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}, "type": "None"},
+        "現金": {"ret": 0.0, "beta": 0.0, "vol": 0.0, "mdd": 0.0, "annuals": {}, "type": "Defensive"}
     }
     defaults = {
         "QQQ": "QQQ (美股大盤)",
@@ -73,9 +76,10 @@ def load_default_assets():
     for ticker, display_name in defaults.items():
         data, _ = fetch_asset_data(ticker)
         if data:
-            if "QLD" in ticker: data["beta"] = 2.0
-            if "00713" in ticker: data["beta"] = 0.65
-            if "SGOV" in ticker: data["beta"] = 0.0
+            if "QLD" in ticker: data["beta"] = 2.0; data["type"] = "Leverage"
+            if "00713" in ticker: data["beta"] = 0.65; data["type"] = "Prototype"
+            if "SGOV" in ticker: data["beta"] = 0.0; data["type"] = "Defensive"
+            if "QQQ" in ticker: data["type"] = "Prototype"
             lib[display_name] = data
     return lib
 
@@ -92,51 +96,111 @@ if 'custom_strategies' not in st.session_state:
     st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 核心計算引擎 (修復欄位與命名)
+# 3. 核心計算引擎 (加入動態再平衡與維持率邏輯)
 # ==========================================
-def calculate_metrics(weights_dict, margin_rate):
-    total_weight = sum(weights_dict.values())
-    debt_ratio = max(0, total_weight - 100.0)
+def calculate_metrics(weights_dict, margin_rate, rebalance_type):
+    # 初始資金池設定
+    initial_total_weight = sum(weights_dict.values())
+    initial_debt_ratio = max(0, initial_total_weight - 100.0)
     
-    asset_ret, sys_beta, est_vol, est_mdd = 0.0, 0.0, 0.0, 0.0
-    strategy_annuals = {}
+    # 基礎靜態指標計算 (用於系統Beta與波動率)
+    sys_beta, est_vol, est_mdd = 0.0, 0.0, 0.0
     all_years = set()
     
     for name, weight in weights_dict.items():
         if name in st.session_state.asset_library and weight > 0:
-            all_years.update(st.session_state.asset_library[name].get("annuals", {}).keys())
-            
-    for name, weight in weights_dict.items():
-        if name in st.session_state.asset_library and weight > 0:
             asset = st.session_state.asset_library[name]
+            all_years.update(asset.get("annuals", {}).keys())
             w_pct = weight / 100.0
-            asset_ret += asset["ret"] * w_pct
             sys_beta += asset["beta"] * w_pct
             est_vol += asset["vol"] * w_pct
-            est_mdd += asset.get("mdd", 0) * w_pct 
+            est_mdd += asset.get("mdd", 0) * w_pct
             
+    # 動態年份模擬
+    strategy_annuals = {}
+    
+    # 模擬 100 單位本金
+    portfolio_value = 100.0
+    current_weights = {name: weight/100.0 for name, weight in weights_dict.items()}
+    current_debt = initial_debt_ratio
+    
     for year in sorted(all_years):
-        yr_ret = 0
+        # 1. 年度資產增長
+        year_return = 0
         valid_assets = 0
-        for name, weight in weights_dict.items():
-            if name in st.session_state.asset_library and weight > 0:
+        asset_performances = {} # 紀錄各資產本年報酬率
+        
+        for name, weight_pct in current_weights.items():
+            if name in st.session_state.asset_library and weight_pct > 0:
                 asset_annuals = st.session_state.asset_library[name].get("annuals", {})
                 if year in asset_annuals:
-                    yr_ret += asset_annuals[year] * (weight / 100.0)
+                    ret = asset_annuals[year]
+                    asset_performances[name] = ret
+                    year_return += ret * weight_pct
                     valid_assets += 1
-        
+                else:
+                    asset_performances[name] = 0 # 缺失資料視為0
+                    
+        # 2. 扣除借貸利息
         if valid_assets > 0:
-            yr_ret -= (debt_ratio / 100.0) * margin_rate
-            strategy_annuals[year] = yr_ret
+            interest_cost = (current_debt / 100.0) * margin_rate
+            net_year_return = year_return - interest_cost
+            strategy_annuals[year] = net_year_return
             
-    debt_cost = (debt_ratio / 100.0) * margin_rate
-    net_return = asset_ret - debt_cost
-    sharpe = (net_return - RISK_FREE_RATE) / est_vol if est_vol > 0 else 0
+            # 更新投資組合總值 (簡化模型)
+            portfolio_value *= (1 + net_year_return)
+            
+            # 3. 執行再平衡邏輯 (影響明年的權重)
+            if rebalance_type == "傳統定時再平衡":
+                # 強制回歸初始權重
+                current_weights = {name: weight/100.0 for name, weight in weights_dict.items()}
+                current_debt = initial_debt_ratio
+                
+            elif rebalance_type == "CLEC 聰明再平衡":
+                # CLEC 邏輯：正2上漲抽30%給短債，下跌用短債2%買正2
+                for name, ret in asset_performances.items():
+                    asset_type = st.session_state.asset_library[name].get("type", "")
+                    if asset_type == "Leverage":
+                        if ret > 0:
+                            # 獲利部分抽離 30% 轉給防守資產
+                            profit_amount = current_weights[name] * ret * 0.3
+                            current_weights[name] -= profit_amount
+                            # 尋找防守資產並注入
+                            for d_name in current_weights.keys():
+                                if st.session_state.asset_library[d_name].get("type") == "Defensive":
+                                    current_weights[d_name] += profit_amount
+                                    break
+                        elif ret < 0:
+                            # 跌勢，用防守資產的 2% 救正2
+                            for d_name in current_weights.keys():
+                                if st.session_state.asset_library[d_name].get("type") == "Defensive":
+                                    rescue_amount = current_weights[d_name] * 0.02
+                                    current_weights[d_name] -= rescue_amount
+                                    current_weights[name] += rescue_amount
+                                    break
+                # 重新正規化權重 (若未執行增貸)
+                total_w = sum(current_weights.values())
+                current_weights = {k: v/total_w for k, v in current_weights.items()}
+                
+            elif rebalance_type == "不執行再平衡":
+                # 放任權重漂移 (強者恆強，弱者越弱)
+                for name in current_weights.keys():
+                    current_weights[name] *= (1 + asset_performances[name])
+                total_w = sum(current_weights.values())
+                current_weights = {k: v/total_w for k, v in current_weights.items()}
+
+    # 計算最終年化平均與夏普值
+    if strategy_annuals:
+        avg_annual_ret = sum(strategy_annuals.values()) / len(strategy_annuals)
+        sharpe = (avg_annual_ret - RISK_FREE_RATE) / est_vol if est_vol > 0 else 0
+    else:
+        avg_annual_ret = 0
+        sharpe = 0
     
     return {
-        "總權重": total_weight, "實質負債": debt_ratio,
+        "總權重": initial_total_weight, "實質負債": initial_debt_ratio,
         "系統 Beta": sys_beta,
-        "年化淨報酬率": net_return, 
+        "年化淨報酬率": avg_annual_ret, 
         "年化波動率": est_vol,
         "最大回撤": est_mdd,
         "夏普值": sharpe,
@@ -144,10 +208,18 @@ def calculate_metrics(weights_dict, margin_rate):
     }
 
 # ==========================================
-# 4. 介面渲染：側邊欄
+# 4. 介面渲染：側邊欄 (加入再平衡選單)
 # ==========================================
 st.sidebar.title("⚙️ 系統設定與資產庫")
 margin_rate = st.sidebar.number_input("質押借貸利率 (%)", 0.0, 10.0, 2.5, 0.1) / 100.0
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔄 再平衡機制選擇")
+rebalance_choice = st.sidebar.radio(
+    "選擇年度再平衡策略",
+    ("傳統定時再平衡", "CLEC 聰明再平衡", "不執行再平衡"),
+    help="傳統定時：每年底強制恢復初始權重。 CLEC 聰明：上漲抽正2利潤給債券，下跌用債券2%接刀。"
+)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
@@ -176,7 +248,7 @@ with st.sidebar.expander("查看當前資產庫參數"):
 # ==========================================
 # 5. 主畫面：策略建構器
 # ==========================================
-st.title("📊 頂級質押戰略戰情室 (20年回測版)")
+st.title("📊 頂級質押戰略戰情室 (20年動態回測版)")
 
 st.subheader("🛠️ 建立新的自訂戰略")
 with st.form("create_strategy_form"):
@@ -206,21 +278,21 @@ st.markdown("---")
 # ==========================================
 # 6. 終極比較表與視覺化圖表
 # ==========================================
-st.subheader("🏆 戰略終極比較表")
-st.caption("💡 備註：此表為「靜態起始權重」預估。真實的「動態恆定維持率」會隨資產上漲持續擴張債務與複利，實質長期利潤將高於此靜態預估值。")
+st.subheader(f"🏆 戰略終極比較表 (目前模式: {rebalance_choice})")
+st.caption("💡 備註：此表格已套用您在側邊欄選擇的再平衡邏輯進行 20 年動態回測。")
 
 comp_data = []
 annual_chart_data = []
 
 for name, wts in st.session_state.benchmark_strategies.items():
-    res = calculate_metrics(wts, margin_rate)
+    res = calculate_metrics(wts, margin_rate, rebalance_choice)
     res["策略名稱"] = name; res["類型"] = "經典對照"
     comp_data.append(res)
     for year, ret in res["annuals"].items():
         annual_chart_data.append({"策略名稱": name, "年份": year, "報酬率": ret, "類型": "經典對照"})
 
 for name, wts in st.session_state.custom_strategies.items():
-    res = calculate_metrics(wts, margin_rate)
+    res = calculate_metrics(wts, margin_rate, rebalance_choice)
     res["策略名稱"] = "🎯 " + name; res["類型"] = "自訂戰略"
     comp_data.append(res)
     for year, ret in res["annuals"].items():
@@ -229,7 +301,6 @@ for name, wts in st.session_state.custom_strategies.items():
 df_comp = pd.DataFrame(comp_data)
 
 if not df_comp.empty:
-    # 補回系統 Beta 與 年化波動率
     cols_order = ["類型", "策略名稱", "總權重", "實質負債", "系統 Beta", "年化淨報酬率", "年化波動率", "最大回撤", "夏普值"]
     df_display = df_comp[cols_order].copy()
     
@@ -244,7 +315,7 @@ if not df_comp.empty:
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.subheader("📆 歷年報酬率壓力測試 (最長 20 年)")
+    st.subheader("📆 歷年淨報酬率壓力測試 (最長 20 年)")
     if annual_chart_data:
         df_annual = pd.DataFrame(annual_chart_data)
         df_annual = df_annual.sort_values(by="年份")
