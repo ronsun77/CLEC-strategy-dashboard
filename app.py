@@ -459,6 +459,12 @@ if not df_comp.empty:
     df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
     df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
     
+    # 恢復為最簡潔的名詞，去除了括號內的雜訊
+    df_display = df_display.rename(columns={
+        "年化淨報酬率(CAGR)": "年化淨報酬率 (CAGR/IRR)",
+        "最大回撤": "最大回撤 (MDD)"
+    })
+    
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
     st.markdown("---")
@@ -467,7 +473,7 @@ if not df_comp.empty:
     
     valid_df = df_comp[df_comp["狀態"] == "安全存活"]
     if not valid_df.empty:
-        best_cagr = valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
+        best_cagr = valid_df.loc[valid_df["年化淨報酬率 (CAGR/IRR)"].str.rstrip('%').astype(float).idxmax()] if "年化淨報酬率 (CAGR/IRR)" in df_display.columns else valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
         best_equity = valid_df.loc[valid_df["最終淨值"].idxmax()]
         best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] 
         best_recovery = valid_df.loc[valid_df["最大修復天數"].idxmin()]
@@ -585,11 +591,20 @@ if not df_comp.empty:
         st.plotly_chart(fig_annual, use_container_width=True)
         
     st.markdown("---")
-    st.markdown("### 📝 量化洞察與戰略優化報告")
+    # 💥 全新改版：實戰白話文攻略報告
+    st.markdown("### 📝 實戰攻略：如何調配出比「純抱 QQQ」更完美的比例？")
     st.info("""
-    **基於當前壓力測試結果，系統提出以下配置優化建議：**
-    
-    1. **波動率與槓桿耗損管理**：若發現含有高槓桿（如 QLD）的組合在遇到極端空頭時，其痛苦指數與最大回撤高於預期，這主要是由槓桿的波動率耗損與負債利差所致。單一靜態配比在牛市雖能極大化利潤，但在熊市修復期會顯得吃力。
-    2. **矩陣分離策略 (Core-Satellite)**：建議將資金池進行實體或邏輯切割。將純貼齊大盤的核心追蹤部位獨立出來，另外設立專門執行槓桿與財務工程的部位，並預留戰術緩衝空間，避免單一帳戶在黑天鵝事件時承受所有維持率壓力。
-    3. **總經指標動態水位調節**：與其死守固定的恆定維持率目標，可考慮引入如信用價差（如高收益債利差）或央行通膨目標等外部總經指標。當系統性信用風險升溫時，機動調升 SGOV 或防禦型資產的絕對比重，這將能有效防禦「股債雙殺」的情境，在不犧牲長線收益率的同時，顯著降低您的痛苦指數。
+    不想看學術名詞？直接給你三套「打敗大盤」的實戰調配指南：
+
+    💡 **目標 1：追求更高的「夏普值」(CP值最高、漲得最穩)**
+    * **破解思路**：純大盤的波動還是太大了，你需要「微量槓桿來保住報酬 + 大量防護來壓低波動」。
+    * **建議配比**：試試 **`50% QQQ + 15% QLD + 35% SGOV`**。利用 15% 的正2維持整體向上的攻擊力，同時用高達 35% 的超短債強力吸收震盪，這能讓你的資金曲線變得非常平滑。
+
+    🛡️ **目標 2：追求更低的「最大回撤」(抗跌第一、睡得安穩)**
+    * **破解思路**：遇到股災要少跌，唯一解法就是擴大 SGOV (現金水庫)，並且「降低或捨棄」正2槓桿的耗損。
+    * **建議配比**：試試 **`70% QQQ + 0% QLD + 30% SGOV`** 或內建的 **`防禦 812`** 策略。把 SGOV 比例拉高到 30% 甚至 40%，就算遇到 2008 年金融海嘯，你的帳戶跌幅也會比 QQQ 小非常多。
+
+    🔥 **目標 3：追求極致的「最終淨值」(承受同等風險，但要賺更多)**
+    * **破解思路**：如果你自認心臟夠大顆，能承受跟 QQQ 差不多的劇烈波動，那就透過短債借錢，讓正2來拉抬上限。
+    * **建議配比**：直接選用內建的 **`經典 CLEC 433` (40% QQQ + 30% QLD + 30% SGOV)**。由短債負責繳利息與防斷頭，30% 的正2負責在牛市狂奔。只要不被斷頭，長線滾出來的複利會相當驚人。
     """)
