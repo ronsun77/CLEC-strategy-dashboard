@@ -12,7 +12,7 @@ st.set_page_config(page_title="CLEC 質押策略績效戰情室", layout="wide")
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (含防禦重試)
+# 1. 自動抓取市場數據函數 
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_base_data(ticker, asset_type):
@@ -48,7 +48,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (💥 真實 Beta 動態聯立矩陣)
+# 2. 初始化預設資產與策略
 # ==========================================
 def load_default_assets():
     lib = {
@@ -98,7 +98,6 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
-# 💥 更新策略名稱，將維持率目標直接寫入名稱中
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
@@ -401,10 +400,11 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     final_status = f"破產 ({bankruptcy_date} {bankruptcy_reason})" if is_bankrupt else "安全存活"
     
     return {
-        "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, "真實 Beta (對標 QQQ)": sys_beta, 
-        "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
-        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, "痛苦指數": ulcer_index,
-        "累計提領生活費": total_withdrawn, "狀態": final_status,
+        "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, 
+        "初始借貸率": initial_debt_ratio / 100.0, "對標 Beta": sys_beta, 
+        "CAGR": cagr, "最終淨值": portfolio_equity, "年化波動": real_vol,
+        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "修復天數": max_recovery_days, "痛苦指數": ulcer_index,
+        "累計提領": total_withdrawn, "狀態": final_status,
         "annuals": strategy_annuals, "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
     }
@@ -494,39 +494,29 @@ if not df_comp.empty:
         * **夏普值 (Sharpe Ratio)**：每承受 1 單位波動風險，能換取多少超額報酬。越高越好，大於 1 算優秀，代表這套策略「漲得穩」。
         * **卡瑪比率 (Calmar Ratio)**：年化報酬率除以最大回撤的絕對值。衡量你「每忍受 1% 的極限跌幅，每年能賺回多少利潤」。數值越高，代表遇到股災時的 CP 值越高。
         * **痛苦指數 (Ulcer Index)**：不只看跌多深，還看你在水下「憋氣套牢了多久」。數值越低越好，越低代表投資人晚上睡得越安穩。
-        * **年化淨報酬率 (CAGR)**：在本系統包含現金流（提領生活費）的模型中，CAGR 的計算邏輯已非常貼近 IRR（內部報酬率）的實質意義。
+        * **CAGR**：年化複合成長率。在本系統包含現金流（提領生活費）的模型中，此數據即等同於投資人的實質 IRR（內部報酬率）。
+        * **初始借貸率**：總資產配比超過 100% 的部分（如 623 策略為 110%，即代表開局時借貸比例為 10%）。
         """)
     
+    # 💥 採用極簡名稱，消滅水平滑動條
     cols_order = [
         "策略名稱", "負債模式", "再平衡", "狀態", 
-        "真實 Beta (對標 QQQ)", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", "痛苦指數", 
-        "夏普值", "卡瑪比率", "最大修復天數", "最終淨值", "累計提領生活費"
+        "初始借貸率", "對標 Beta", "CAGR", "年化波動", "最大回撤", "痛苦指數", 
+        "夏普值", "卡瑪比率", "修復天數", "最終淨值", "累計提領"
     ]
     df_display = df_comp[cols_order].copy()
     
-    df_display["真實 Beta (對標 QQQ)"] = df_display["真實 Beta (對標 QQQ)"].apply(lambda x: f"{x:.2f}")
-    df_display["年化淨報酬率(CAGR)"] = df_display["年化淨報酬率(CAGR)"].apply(lambda x: f"{x*100:.2f}%")
-    df_display["年化波動率"] = df_display["年化波動率"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["初始借貸率"] = df_display["初始借貸率"].apply(lambda x: f"{x*100:.1f}%")
+    df_display["對標 Beta"] = df_display["對標 Beta"].apply(lambda x: f"{x:.2f}")
+    df_display["CAGR"] = df_display["CAGR"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["年化波動"] = df_display["年化波動"].apply(lambda x: f"{x*100:.2f}%")
     df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
     df_display["痛苦指數"] = df_display["痛苦指數"].apply(lambda x: f"{x:.2f}")
     df_display["夏普值"] = df_display["夏普值"].apply(lambda x: f"{x:.3f}")
     df_display["卡瑪比率"] = df_display["卡瑪比率"].apply(lambda x: f"{x:.3f}")
-    df_display["最大修復天數"] = df_display["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
+    df_display["修復天數"] = df_display["修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "破產")
     df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
-    df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
-    
-    # 💥 全面啟用換行排版，消滅水平卷軸
-    df_display = df_display.rename(columns={
-        "真實 Beta (對標 QQQ)": "真實 Beta\n(對標 QQQ)",
-        "年化淨報酬率(CAGR)": "年化淨報酬\n(CAGR/IRR)",
-        "年化波動率": "年化\n波動率",
-        "最大回撤": "最大回撤\n(MDD)",
-        "痛苦指數": "痛苦\n指數",
-        "夏普值": "夏普值\n(Sharpe)",
-        "卡瑪比率": "卡瑪比率\n(Calmar)",
-        "最大修復天數": "最大修復\n(天)",
-        "累計提領生活費": "累計提領\n生活費"
-    })
+    df_display["累計提領"] = df_display["累計提領"].apply(lambda x: f"NT$ {x:,.0f}")
     
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
@@ -536,10 +526,10 @@ if not df_comp.empty:
     
     valid_df = df_comp[df_comp["狀態"] == "安全存活"]
     if not valid_df.empty:
-        best_cagr = valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
+        best_cagr = valid_df.loc[valid_df["CAGR"].idxmax()]
         best_equity = valid_df.loc[valid_df["最終淨值"].idxmax()]
         best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] 
-        best_recovery = valid_df.loc[valid_df["最大修復天數"].idxmin()]
+        best_recovery = valid_df.loc[valid_df["修復天數"].idxmin()]
         best_ulcer = valid_df.loc[valid_df["痛苦指數"].idxmin()]
         best_sharpe = valid_df.loc[valid_df["夏普值"].idxmax()]
         best_calmar = valid_df.loc[valid_df["卡瑪比率"].idxmax()]
@@ -547,18 +537,18 @@ if not df_comp.empty:
         st.markdown("##### 🏆 絕對收益視角")
         c1, c2 = st.columns(2)
         with c1: st.info(f"**最高最終餘額**\n### NT$ {best_equity['最終淨值']:,.0f}\n---\n#### 🏆 冠軍策略： `{best_equity['策略名稱']}`")
-        with c2: st.info(f"**最高年化回報 (CAGR/IRR)**\n### {best_cagr['年化淨報酬率(CAGR)']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_cagr['策略名稱']}`")
+        with c2: st.info(f"**最高年化回報 (CAGR)**\n### {best_cagr['CAGR']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_cagr['策略名稱']}`")
 
         st.markdown("##### 🛡️ 風險與回撤視角")
         c3, c4, c5 = st.columns(3)
-        with c3: st.warning(f"**最低最大回撤 (MDD)**\n### {best_mdd['最大回撤']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_mdd['策略名稱']}`")
-        with c4: st.warning(f"**最短套牢修復期**\n### {best_recovery['最大修復天數']:,} 天\n---\n#### 🏆 冠軍策略： `{best_recovery['策略名稱']}`")
-        with c5: st.warning(f"**最低痛苦指數 (Ulcer Index)**\n### {best_ulcer['痛苦指數']:.2f}\n---\n#### 🏆 冠軍策略： `{best_ulcer['策略名稱']}`")
+        with c3: st.warning(f"**最低最大回撤**\n### {best_mdd['最大回撤']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_mdd['策略名稱']}`")
+        with c4: st.warning(f"**最短修復期**\n### {best_recovery['修復天數']:,} 天\n---\n#### 🏆 冠軍策略： `{best_recovery['策略名稱']}`")
+        with c5: st.warning(f"**最低痛苦指數**\n### {best_ulcer['痛苦指數']:.2f}\n---\n#### 🏆 冠軍策略： `{best_ulcer['策略名稱']}`")
 
         st.markdown("##### ⚖️ 風險收益比視角")
         c6, c7 = st.columns(2)
-        with c6: st.success(f"**最高夏普比率 (Sharpe)**\n### {best_sharpe['夏普值']:.3f}\n---\n#### 🏆 冠軍策略： `{best_sharpe['策略名稱']}`")
-        with c7: st.success(f"**最高卡瑪比率 (Calmar)**\n### {best_calmar['卡瑪比率']:.3f}\n---\n#### 🏆 冠軍策略： `{best_calmar['策略名稱']}`")
+        with c6: st.success(f"**最高夏普值**\n### {best_sharpe['夏普值']:.3f}\n---\n#### 🏆 冠軍策略： `{best_sharpe['策略名稱']}`")
+        with c7: st.success(f"**最高卡瑪比率**\n### {best_calmar['卡瑪比率']:.3f}\n---\n#### 🏆 冠軍策略： `{best_calmar['策略名稱']}`")
     else:
         st.error("⚠️ 壓力測試失敗：在您設定的條件下，所有策略均已宣告破產，無法產生最佳方案評估。")
 
@@ -568,13 +558,9 @@ if not df_comp.empty:
         st.subheader("💰 最終資產淨值排行 (NT$)")
         df_chart_multiple = df_comp.sort_values(by="最終淨值", ascending=True)
         max_val = df_chart_multiple["最終淨值"].max()
-        # 💥 更新顏色對應表，適應新名稱
         color_map = {
-            "純抱 SPY": "#c7c7c7", 
-            "純抱 QQQ": "#7f7f7f", 
-            "經典 CLEC 433 (買借死)": "#1f77b4", 
-            "穩健 623 (恆定維持率 600%)": "#ff7f0e",
-            "防禦 812 (恆定維持率 1000%)": "#2ca02c"
+            "純抱 SPY": "#c7c7c7", "純抱 QQQ": "#7f7f7f", 
+            "經典 CLEC 433 (買借死)": "#1f77b4", "穩健 623 (恆定維持率 600%)": "#ff7f0e", "防禦 812 (恆定維持率 1000%)": "#2ca02c"
         }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
@@ -603,11 +589,11 @@ if not df_comp.empty:
         st.plotly_chart(fig_calmar, use_container_width=True)
     with col4:
         st.subheader("⏳ 最長套牢修復期 (越短越好)")
-        df_chart_rec = df_comp.sort_values(by="最大修復天數", ascending=False)
-        max_rec = df_chart_rec["最大修復天數"].max()
-        fig_rec = px.bar(df_chart_rec, x="最大修復天數", y="策略名稱", color="策略名稱", orientation='h', text="最大修復天數", color_discrete_map=color_map)
+        df_chart_rec = df_comp.sort_values(by="修復天數", ascending=False)
+        max_rec = df_chart_rec["修復天數"].max()
+        fig_rec = px.bar(df_chart_rec, x="修復天數", y="策略名稱", color="策略名稱", orientation='h', text="修復天數", color_discrete_map=color_map)
         fig_rec.update_layout(xaxis=dict(range=[0, max_rec * 1.35]), showlegend=False)
-        df_display_rec_text = df_chart_rec["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
+        df_display_rec_text = df_chart_rec["修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
         fig_rec.update_traces(text=df_display_rec_text, textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_rec, use_container_width=True)
 
@@ -654,7 +640,7 @@ if not df_comp.empty:
     st.markdown("---")
     st.markdown("### 📝 實戰攻略：如何調配出比「純抱 QQQ」更完美的比例？")
     st.info("""
-    在量化分析中，要判斷一個策略是否真的「打敗大盤」，我們必須在**「相同系統 Beta 值 (承擔相同市場風險)」**的起跑線上來比較。純抱 QQQ 的 Beta 是 1.0，不想看學術名詞？直接給你三套實戰調配指南：
+    在量化分析中，要判斷一個策略是否真的「打敗大盤」，我們必須在**「相同對標 Beta 值 (承擔相同市場風險)」**的起跑線上來比較。直接給你三套實戰調配指南：
 
     💡 **目標 1：追求更高的「夏普值」(CP值最高、漲得最穩)**
     * **破解思路**：純大盤的波動還是太大了，你需要「微量槓桿來保住報酬 + 大量防護來壓低波動」。
@@ -666,5 +652,5 @@ if not df_comp.empty:
 
     🔥 **目標 3：追求極致的「最終淨值」(承受同等風險，但要賺得比 QQQ 更多)**
     * **破解思路**：如果你想在牛市中創造比 100% QQQ 更高的絕對淨值，你需要的是 **穩健 623 (恆定維持率 600%)**。
-    * **為什麼是 623？**：仔細看它的配比：`60% QQQ (Beta 1) + 20% QLD (Beta 2) + 30% SGOV (Beta 0)`。這套組合的初始真實 Beta 剛好等於 **1.0**！這意味著你承受的「大盤曝險」與純抱 QQQ 一模一樣。但透過將負債與低成本短債綁定，並利用系統每年自動「逢高增貸再投資」的複利飛輪，這套策略能在長線牛市中榨出比純抱 QQQ 更驚人的最終淨值（當然，代價是在極端空頭時的回撤會稍微深一點）。
+    * **為什麼是 623？**：仔細看它的配比：`60% QQQ (Beta 1) + 20% QLD (Beta 2) + 30% SGOV (Beta 0)`。這套組合的初始對標 Beta 剛好等於 **1.0**！這意味著你承受的「大盤曝險」與純抱 QQQ 一模一樣。但透過將負債與低成本短債綁定，並利用系統每年自動「逢高增貸再投資」的複利飛輪，這套策略能在長線牛市中榨出比純抱 QQQ 更驚人的最終淨值（當然，代價是在極端空頭時的回撤會稍微深一點）。
     """)
