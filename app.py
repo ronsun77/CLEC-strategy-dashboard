@@ -7,7 +7,7 @@ import numpy as np
 import datetime
 import re
 
-st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wide")
+st.set_page_config(page_title="CLEC 質押策略績效戰情室", layout="wide")
 RISK_FREE_RATE = 0.04
 
 # ==========================================
@@ -354,7 +354,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
 # ==========================================
 # 5. 主畫面：策略建構器
 # ==========================================
-st.title("📊 頂級 CLEC 質押策略回測戰情室")
+st.title("📊 CLEC 質押策略績效戰情室")
 
 st.subheader("🛠 建立自訂組合戰略")
 with st.form("create_strategy_form"):
@@ -431,15 +431,8 @@ df_comp = pd.DataFrame(comp_data)
 
 if not df_comp.empty:
     
-    # 💥 1. 調整順序：先把原始表格放在最上面，並加上名詞解釋
-    st.subheader("📊 績效比較表")
-    
-    with st.expander("📖 點擊查看量化指標白話文說明"):
-        st.markdown("""
-        * **夏普值 (Sharpe Ratio)**：每承受 1 單位波動風險，能換取多少超額報酬。越高越好，大於 1 算優秀，代表這套策略「漲得穩」。
-        * **卡瑪比率 (Calmar Ratio)**：年化報酬率除以最大回撤的絕對值。衡量你「每忍受 1% 的極限跌幅，每年能賺回多少利潤」。數值越高，代表遇到股災時的 CP 值越高。
-        * **痛苦指數 (Ulcer Index)**：不只看跌多深，還看你在水下「憋氣套牢了多久」。數值越低越好，越低代表投資人晚上睡得越安穩。
-        """)
+    # 💥 上下對調：先顯示績效比較表
+    st.markdown("### 📊 績效比較表")
     
     cols_order = [
         "策略名稱", "負債模式", "再平衡", "狀態", 
@@ -459,18 +452,27 @@ if not df_comp.empty:
     df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
     df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
     
+    # 💥 表頭直白化：直接把說明寫在欄位名稱上
+    df_display = df_display.rename(columns={
+        "年化淨報酬率(CAGR)": "年化淨報酬率 (CAGR/IRR)",
+        "最大回撤": "最大回撤 (MDD)",
+        "痛苦指數": "痛苦指數 (越低越好)",
+        "夏普值": "夏普值 (CP值/大於1極佳)",
+        "卡瑪比率": "卡瑪比率 (抗跌性/越高越好)"
+    })
+    
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     
-    # 💥 2. 將最佳配置方案移到表格下方
+    # 💥 下方顯示：最佳配置方案評估 (加上大型字體與分隔線)
     st.markdown("### 👑 最佳配置方案評估")
     
     valid_df = df_comp[df_comp["狀態"] == "安全存活"]
     if not valid_df.empty:
         best_cagr = valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
         best_equity = valid_df.loc[valid_df["最終淨值"].idxmax()]
-        best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] 
+        best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] # 負數最大 = 跌最少
         best_recovery = valid_df.loc[valid_df["最大修復天數"].idxmin()]
         best_ulcer = valid_df.loc[valid_df["痛苦指數"].idxmin()]
         best_sharpe = valid_df.loc[valid_df["夏普值"].idxmax()]
@@ -479,21 +481,21 @@ if not df_comp.empty:
         # 第一列：絕對收益
         st.markdown("##### 🏆 絕對收益視角")
         c1, c2 = st.columns(2)
-        with c1: st.info(f"**最高最終餘額**\n\n### NT$ {best_equity['最終淨值']:,.0f}\n\n🏆 冠軍策略：`{best_equity['策略名稱']}`")
-        with c2: st.info(f"**最高年化回報 (CAGR)**\n\n### {best_cagr['年化淨報酬率(CAGR)']*100:.2f}%\n\n🏆 冠軍策略：`{best_cagr['策略名稱']}`")
+        with c1: st.info(f"**最高最終餘額**\n### NT$ {best_equity['最終淨值']:,.0f}\n---\n#### 🏆 冠軍策略： `{best_equity['策略名稱']}`")
+        with c2: st.info(f"**最高年化回報 (CAGR/IRR)**\n### {best_cagr['年化淨報酬率(CAGR)']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_cagr['策略名稱']}`")
 
         # 第二列：風險與回撤
         st.markdown("##### 🛡️ 風險與回撤視角")
         c3, c4, c5 = st.columns(3)
-        with c3: st.warning(f"**最低最大回撤 (MDD)**\n\n### {best_mdd['最大回撤']*100:.2f}%\n\n🏆 冠軍策略：`{best_mdd['策略名稱']}`")
-        with c4: st.warning(f"**最短套牢修復期**\n\n### {best_recovery['最大修復天數']:,} 天\n\n🏆 冠軍策略：`{best_recovery['策略名稱']}`")
-        with c5: st.warning(f"**最低痛苦指數 (Ulcer Index)**\n\n### {best_ulcer['痛苦指數']:.2f}\n\n🏆 冠軍策略：`{best_ulcer['策略名稱']}`")
+        with c3: st.warning(f"**最低最大回撤 (MDD)**\n### {best_mdd['最大回撤']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_mdd['策略名稱']}`")
+        with c4: st.warning(f"**最短套牢修復期**\n### {best_recovery['最大修復天數']:,} 天\n---\n#### 🏆 冠軍策略： `{best_recovery['策略名稱']}`")
+        with c5: st.warning(f"**最低痛苦指數 (Ulcer Index)**\n### {best_ulcer['痛苦指數']:.2f}\n---\n#### 🏆 冠軍策略： `{best_ulcer['策略名稱']}`")
 
         # 第三列：風險收益比
         st.markdown("##### ⚖️ 風險收益比視角")
         c6, c7 = st.columns(2)
-        with c6: st.success(f"**最高夏普比率**\n\n### {best_sharpe['夏普值']:.3f}\n\n🏆 冠軍策略：`{best_sharpe['策略名稱']}`")
-        with c7: st.success(f"**最高卡瑪比率 (收益/風險)**\n\n### {best_calmar['卡瑪比率']:.3f}\n\n🏆 冠軍策略：`{best_calmar['策略名稱']}`")
+        with c6: st.success(f"**最高夏普比率 (Sharpe)**\n### {best_sharpe['夏普值']:.3f}\n---\n#### 🏆 冠軍策略： `{best_sharpe['策略名稱']}`")
+        with c7: st.success(f"**最高卡瑪比率 (Calmar)**\n### {best_calmar['卡瑪比率']:.3f}\n---\n#### 🏆 冠軍策略： `{best_calmar['策略名稱']}`")
     else:
         st.error("⚠️ 壓力測試失敗：在您設定的條件下，所有策略均已宣告破產，無法產生最佳方案評估。")
 
