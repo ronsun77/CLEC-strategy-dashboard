@@ -48,7 +48,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略
+# 2. 初始化預設資產與策略 (💥 修正 812 預設維持率)
 # ==========================================
 def load_default_assets():
     lib = {
@@ -98,12 +98,13 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
+# 💥 精準對齊維持率數學邏輯 (812 -> 800%)
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
     "穩健 623 (恆定維持率 600%)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
-    "防禦 812 (恆定維持率 1000%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 10.0}
+    "防禦 812 (恆定維持率 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0}
 }
 
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
@@ -498,7 +499,6 @@ if not df_comp.empty:
         * **初始借貸率**：總資產配比超過 100% 的部分（如 623 策略為 110%，即代表開局時借貸比例為 10%）。
         """)
     
-    # 💥 採用極簡名稱，消滅水平滑動條
     cols_order = [
         "策略名稱", "負債模式", "再平衡", "狀態", 
         "初始借貸率", "對標 Beta", "CAGR", "年化波動", "最大回撤", "痛苦指數", 
@@ -517,6 +517,18 @@ if not df_comp.empty:
     df_display["修復天數"] = df_display["修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "破產")
     df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
     df_display["累計提領"] = df_display["累計提領"].apply(lambda x: f"NT$ {x:,.0f}")
+    
+    df_display = df_display.rename(columns={
+        "對標 Beta": "對標 Beta\n(QQQ=1)",
+        "CAGR": "年化淨報酬\n(CAGR/IRR)",
+        "年化波動": "年化\n波動率",
+        "最大回撤": "最大回撤\n(MDD)",
+        "痛苦指數": "痛苦\n指數",
+        "夏普值": "夏普值\n(Sharpe)",
+        "卡瑪比率": "卡瑪比率\n(Calmar)",
+        "修復天數": "最大修復\n(天)",
+        "累計提領": "累計提領\n生活費"
+    })
     
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
@@ -560,7 +572,7 @@ if not df_comp.empty:
         max_val = df_chart_multiple["最終淨值"].max()
         color_map = {
             "純抱 SPY": "#c7c7c7", "純抱 QQQ": "#7f7f7f", 
-            "經典 CLEC 433 (買借死)": "#1f77b4", "穩健 623 (恆定維持率 600%)": "#ff7f0e", "防禦 812 (恆定維持率 1000%)": "#2ca02c"
+            "經典 CLEC 433 (買借死)": "#1f77b4", "穩健 623 (恆定維持率 600%)": "#ff7f0e", "防禦 812 (恆定維持率 800%)": "#2ca02c"
         }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
