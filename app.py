@@ -12,7 +12,7 @@ st.set_page_config(page_title="CLEC 質押策略績效戰情室", layout="wide")
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (💥 新增自動重試防護網)
+# 1. 自動抓取市場數據函數 (含防禦重試)
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_base_data(ticker, asset_type):
@@ -22,7 +22,6 @@ def fetch_asset_base_data(ticker, asset_type):
             ticker = ticker + '.TW'
             
         data = pd.DataFrame()
-        # 遇到限流時自動重試 3 次
         for _ in range(3):
             temp_data = yf.download(ticker, start="1999-01-01", end=datetime.date.today(), progress=False)
             if not temp_data.empty:
@@ -49,31 +48,53 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略
+# 2. 初始化預設資產與策略 (💥 真實 Beta 動態聯立矩陣)
 # ==========================================
 def load_default_assets():
     lib = {
         "無 (不配置)": {"prices": pd.Series(dtype=float), "inception_date": datetime.date(1990, 1, 1), "beta": 0.0, "type": "None"},
         "現金": {"prices": pd.Series(dtype=float), "inception_date": datetime.date(1990, 1, 1), "beta": 0.0, "type": "Defensive"}
     }
+    
+    # 1. 優先獨立抓取 QQQ 作為全系統 Beta 的絕對基準 (基準值恆定為 1.0)
+    qqq_data, _ = fetch_asset_base_data("QQQ", "Prototype")
+    if qqq_data:
+        qqq_data["beta"] = 1.0
+        lib["QQQ (美股大盤)"] = qqq_data
+        qqq_ret = qqq_data["prices"].pct_change().dropna()
+    else:
+        qqq_ret = pd.Series(dtype=float)
+
     defaults = [
-        ("QQQ", "QQQ (美股大盤)", "Prototype", 1.0),
-        ("SPY", "SPY (標普大盤)", "Prototype", 1.0),
-        ("QLD", "QLD (美股正2)", "Leverage", 2.0),
-        ("0050.TW", "0050 (台股大盤)", "Prototype", 1.0),
-        ("00662.TW", "00662 (NAS原型)", "Prototype", 1.0),
-        ("00713.TW", "00713 (台股高息)", "Prototype", 0.65),
-        ("00631L.TW", "00631L (台股正2)", "Leverage", 2.0),
-        ("00670L.TW", "00670L (美股正2)", "Leverage", 2.0),
-        ("SGOV", "SGOV (美股超短債)", "Defensive", 0.0),
-        ("00865B.TW", "00865B (台股短債)", "Defensive", 0.0),
-        ("00859B.TW", "00859B (台股投資級債)", "Defensive", 0.0)
+        ("SPY", "SPY (標普大盤)", "Prototype"),
+        ("QLD", "QLD (美股正2)", "Leverage"),
+        ("0050.TW", "0050 (台股大盤)", "Prototype"),
+        ("00662.TW", "00662 (NAS原型)", "Prototype"),
+        ("00713.TW", "00713 (台股高息)", "Prototype"),
+        ("00631L.TW", "00631L (台股正2)", "Leverage"),
+        ("00670L.TW", "00670L (美股正2)", "Leverage"),
+        ("SGOV", "SGOV (美股超短債)", "Defensive"),
+        ("00865B.TW", "00865B (台股短債)", "Defensive"),
+        ("00859B.TW", "00859B (台股投資級債)", "Defensive")
     ]
-    for ticker, display_name, a_type, beta in defaults:
+    
+    # 2. 逐一抓取其他資產，並以真實歷史共變異數動態計算對標 QQQ 的 Beta
+    for ticker, display_name, a_type in defaults:
         data, _ = fetch_asset_base_data(ticker, a_type)
         if data:
-            data["beta"] = beta
+            calc_beta = 1.0
+            if not qqq_ret.empty and a_type != "Defensive":
+                asset_ret = data["prices"].pct_change().dropna()
+                common_idx = asset_ret.index.intersection(qqq_ret.index)
+                if len(common_idx) > 30:
+                    matrix = np.cov(asset_ret.loc[common_idx], qqq_ret.loc[common_idx])
+                    calc_beta = matrix[0][1] / matrix[1][1] if matrix[1][1] != 0 else 1.0
+            elif a_type == "Defensive":
+                calc_beta = 0.0
+                
+            data["beta"] = calc_beta
             lib[display_name] = data
+            
     return lib
 
 if 'asset_library' not in st.session_state:
@@ -94,14 +115,12 @@ if 'custom_strategies' not in st.session_state: st.session_state.custom_strategi
 # ==========================================
 st.title("📊 CLEC 質押策略績效戰情室")
 
-# 💥 數據缺失防護網 (API 異常偵測)
 missing_assets = [name for name in ["QQQ (美股大盤)", "QLD (美股正2)", "SGOV (美股超短債)"] if name not in st.session_state.asset_library]
 if missing_assets:
-    st.error(f"🚨 **嚴重警告：核心數據抓取失敗！**\n\n系統未能從 Yahoo Finance 取得以下資產的歷史報價：`{', '.join(missing_assets)}`。這通常是 API 短暫限流或網路不穩所致。\n\n**這將導致回測績效嚴重失真（淨值歸零或 Beta 值異常）！** 請點擊下方按鈕強制重新抓取。")
+    st.error(f"🚨 **嚴重警告：核心數據抓取失敗！**\n\n系統未能從 Yahoo Finance 取得以下資產的歷史報價：`{', '.join(missing_assets)}`。這通常是 API 短暫限流或網路不穩所致。\n\n**這將導致回測績效嚴重失真！** 請點擊下方按鈕強制重新抓取。")
     if st.button("🔄 強制重新抓取並清除快取"):
         st.cache_data.clear()
-        if 'asset_library' in st.session_state:
-            del st.session_state.asset_library
+        if 'asset_library' in st.session_state: del st.session_state.asset_library
         st.rerun()
 
 st.sidebar.markdown("### 歷史回測與分析引擎")
@@ -185,11 +204,11 @@ with st.sidebar.form("auto_fetch_form"):
                 
                 data["beta"] = calculated_beta
                 st.session_state.asset_library[f"{ticker_upper} (自訂)"] = data
-                st.success(f"{msg} (系統自動精確對標 QQQ 計算之 Beta 值 = {calculated_beta:.2f})")
+                st.success(f"{msg} (系統自動精確對標 QQQ 計算之真實 Beta 值 = {calculated_beta:.2f})")
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (修復狀態顯示 Bug)
+# 4. 核心計算引擎 
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -252,7 +271,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     total_withdrawn = 0.0
     is_bankrupt = False
     bankruptcy_date = ""
-    bankruptcy_reason = "存活" # 💥 確保破產原因動態傳遞
+    bankruptcy_reason = "存活"
     daily_interest_rate = margin_rate / 252.0
 
     for date in trading_days:
@@ -311,7 +330,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         display_reg = min(current_reg_margin, 10.0)
         display_bond = min(current_bond_margin, 10.0)
         
-        # 💥 修復：準確判定是淨值歸零，還是融資斷頭
         if portfolio_equity <= 0:
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_date = date.strftime("%Y-%m-%d"); bankruptcy_reason = "淨值歸零"
         elif current_reg_margin < 1.4 and current_debt_amount > 0: 
@@ -381,12 +399,10 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         real_mdd = -1.0; real_vol = 0.0; sharpe = 0; max_recovery_days = 9999; ulcer_index = 99.9
 
     calmar = cagr / abs(real_mdd) if real_mdd != 0 else 0
-    
-    # 💥 確保狀態回傳精準的破產原因
     final_status = f"破產 ({bankruptcy_date} {bankruptcy_reason})" if is_bankrupt else "安全存活"
     
     return {
-        "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, "系統 Beta": sys_beta, 
+        "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, "真實 Beta (對標 QQQ)": sys_beta, 
         "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
         "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, "痛苦指數": ulcer_index,
         "累計提領生活費": total_withdrawn, "狀態": final_status,
@@ -484,12 +500,12 @@ if not df_comp.empty:
     
     cols_order = [
         "策略名稱", "負債模式", "再平衡", "狀態", 
-        "系統 Beta", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", "痛苦指數", 
+        "真實 Beta (對標 QQQ)", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", "痛苦指數", 
         "夏普值", "卡瑪比率", "最大修復天數", "最終淨值", "累計提領生活費"
     ]
     df_display = df_comp[cols_order].copy()
     
-    df_display["系統 Beta"] = df_display["系統 Beta"].apply(lambda x: f"{x:.2f}")
+    df_display["真實 Beta (對標 QQQ)"] = df_display["真實 Beta (對標 QQQ)"].apply(lambda x: f"{x:.2f}")
     df_display["年化淨報酬率(CAGR)"] = df_display["年化淨報酬率(CAGR)"].apply(lambda x: f"{x*100:.2f}%")
     df_display["年化波動率"] = df_display["年化波動率"].apply(lambda x: f"{x*100:.2f}%")
     df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
@@ -633,7 +649,7 @@ if not df_comp.empty:
     st.markdown("---")
     st.markdown("### 📝 實戰攻略：如何調配出比「純抱 QQQ」更完美的比例？")
     st.info("""
-    不想看學術名詞？直接給你三套「打敗大盤」的實戰調配指南：
+    在量化分析中，要判斷一個策略是否真的「打敗大盤」，我們必須在**「相同系統 Beta 值 (承擔相同市場風險)」**的起跑線上來比較。純抱 QQQ 的 Beta 是 1.0，不想看學術名詞？直接給你三套實戰調配指南：
 
     💡 **目標 1：追求更高的「夏普值」(CP值最高、漲得最穩)**
     * **破解思路**：純大盤的波動還是太大了，你需要「微量槓桿來保住報酬 + 大量防護來壓低波動」。
@@ -643,7 +659,7 @@ if not df_comp.empty:
     * **破解思路**：遇到股災要少跌，唯一解法就是擴大 SGOV (現金水庫)，並且「降低或捨棄」正2槓桿的耗損。
     * **建議配比**：試試 **`70% QQQ + 0% QLD + 30% SGOV`** 或內建的 **`防禦 812`** 策略。把 SGOV 比例拉高到 30% 甚至 40%，就算遇到 2008 年金融海嘯，你的帳戶跌幅也會比 QQQ 小非常多。
 
-    🔥 **目標 3：追求極致的「最終淨值」(承受同等風險，但要賺更多)**
-    * **破解思路**：如果你自認心臟夠大顆，能承受跟 QQQ 差不多的劇烈波動，那就透過短債借錢，讓正2來拉抬上限。
-    * **建議配比**：直接選用內建的 **`經典 CLEC 433` (40% QQQ + 30% QLD + 30% SGOV)**。由短債負責繳利息與防斷頭，30% 的正2負責在牛市狂奔。只要不被斷頭，長線滾出來的複利會相當驚人。
+    🔥 **目標 3：追求極致的「最終淨值」(承受同等風險，但要賺得比 QQQ 更多)**
+    * **破解思路**：如果你想在牛市中創造比 100% QQQ 更高的絕對淨值，你需要的是 **穩健 623 (恆定增貸)**。
+    * **為什麼是 623？**：仔細看它的配比：`60% QQQ (Beta 1) + 20% QLD (Beta 2) + 30% SGOV (Beta 0)`。這套組合的初始真實 Beta 剛好等於 **1.0**！這意味著你承受的「大盤曝險」與純抱 QQQ 一模一樣。但透過將負債與低成本短債綁定，並利用系統每年自動「逢高增貸再投資」的複利飛輪，這套策略能在長線牛市中榨出比純抱 QQQ 更驚人的最終淨值（當然，代價是在極端空頭時的回撤會稍微深一點）。
     """)
