@@ -206,7 +206,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎
+# 4. 核心計算引擎 
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -461,7 +461,7 @@ if st.session_state.custom_strategies:
 st.markdown("---")
 
 # ==========================================
-# 6. 終極比較表與最佳配置儀表板
+# 6. 終極比較表與圖表渲染
 # ==========================================
 comp_data = []
 annual_chart_data = []
@@ -530,38 +530,6 @@ if not df_comp.empty:
     })
     
     st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    
-    st.markdown("### 👑 最佳配置方案評估")
-    
-    valid_df = df_comp[df_comp["狀態"] == "安全存活"]
-    if not valid_df.empty:
-        best_cagr = valid_df.loc[valid_df["CAGR"].idxmax()]
-        best_equity = valid_df.loc[valid_df["最終淨值"].idxmax()]
-        best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] 
-        best_recovery = valid_df.loc[valid_df["修復天數"].idxmin()]
-        best_ulcer = valid_df.loc[valid_df["痛苦指數"].idxmin()]
-        best_sharpe = valid_df.loc[valid_df["夏普值"].idxmax()]
-        best_calmar = valid_df.loc[valid_df["卡瑪比率"].idxmax()]
-
-        st.markdown("##### 🏆 絕對收益視角")
-        c1, c2 = st.columns(2)
-        with c1: st.info(f"**最高最終餘額**\n### NT$ {best_equity['最終淨值']:,.0f}\n---\n#### 🏆 冠軍策略： `{best_equity['策略名稱']}`")
-        with c2: st.info(f"**最高年化回報 (CAGR)**\n### {best_cagr['CAGR']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_cagr['策略名稱']}`")
-
-        st.markdown("##### 🛡️ 風險與回撤視角")
-        c3, c4, c5 = st.columns(3)
-        with c3: st.warning(f"**最低最大回撤**\n### {best_mdd['最大回撤']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_mdd['策略名稱']}`")
-        with c4: st.warning(f"**最短修復期**\n### {best_recovery['修復天數']:,} 天\n---\n#### 🏆 冠軍策略： `{best_recovery['策略名稱']}`")
-        with c5: st.warning(f"**最低痛苦指數**\n### {best_ulcer['痛苦指數']:.2f}\n---\n#### 🏆 冠軍策略： `{best_ulcer['策略名稱']}`")
-
-        st.markdown("##### ⚖️ 風險收益比視角")
-        c6, c7 = st.columns(2)
-        with c6: st.success(f"**最高夏普值**\n### {best_sharpe['夏普值']:.3f}\n---\n#### 🏆 冠軍策略： `{best_sharpe['策略名稱']}`")
-        with c7: st.success(f"**最高卡瑪比率**\n### {best_calmar['卡瑪比率']:.3f}\n---\n#### 🏆 冠軍策略： `{best_calmar['策略名稱']}`")
-    else:
-        st.error("⚠️ 壓力測試失敗：在您設定的條件下，所有策略均已宣告破產，無法產生最佳方案評估。")
 
     st.markdown("---")
     col1, col2 = st.columns(2)
@@ -647,51 +615,68 @@ if not df_comp.empty:
         fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group", color_discrete_map=color_map)
         fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度淨報酬率", xaxis_title="年份", height=450)
         st.plotly_chart(fig_annual, use_container_width=True)
-
-# ==========================================
-# 7. 💥 AI 動態尋優判斷模組 (背景計算隱藏策略)
-# ==========================================
-if not df_comp.empty and not valid_df.empty:
+        
     st.markdown("---")
+    
+    # 💥 全新改版：動態 AI 尋優系統 (嚴格排除 SPY 作為勝出者，並顯示具體數字)
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
-    with st.spinner("⏳ 系統正在背景進行極限邊界探索，為您計算是否有更佳的配比..."):
-        # 定義三組 AI 隱藏候選策略 (極限防禦, 高CP平衡, 極致攻擊)
-        ai_candidates = {
-            "✨ AI 推薦：極致夏普 (高CP值)": {"wts": {"QQQ (美股大盤)": 45.0, "QLD (美股正2)": 15.0, "SGOV (美股超短債)": 50.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 9.5},
-            "✨ AI 推薦：鐵壁防禦 (極低回撤)": {"wts": {"QQQ (美股大盤)": 50.0, "QLD (美股正2)": 0.0, "SGOV (美股超短債)": 60.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 11.0},
-            "✨ AI 推薦：極致增長 (高風險報酬)": {"wts": {"QQQ (美股大盤)": 30.0, "QLD (美股正2)": 50.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
-        }
-        
-        ai_results = []
-        for ai_name, ai_config in ai_candidates.items():
-            res = calculate_metrics(ai_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value)
-            res["策略名稱"] = ai_name
-            ai_results.append(res)
+    valid_df = df_comp[df_comp["狀態"] == "安全存活"]
+    if not valid_df.empty:
+        with st.spinner("⏳ 系統正在背景進行極限邊界探索，與您的配置進行智能單挑..."):
             
-        df_ai = pd.DataFrame(ai_results)
-        df_ai_valid = df_ai[df_ai["狀態"] == "安全存活"]
-        
-        st.info(f"系統已根據您選擇的 `{start_date} ~ {end_date}` 區間進行了背景運算。針對您追求的不同目標，系統為您判斷出以下能超越常規對照組的『黃金比例』建議：")
-        
-        if not df_ai_valid.empty:
-            # 判斷 1: 夏普值優化
-            ai_best_sharpe = df_ai_valid.loc[df_ai_valid["夏普值"].idxmax()]
-            if ai_best_sharpe["夏普值"] > best_sharpe["夏普值"]:
-                st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n系統演算發現，目前的 `{best_sharpe['策略名稱']}` (夏普值 {best_sharpe['夏普值']:.3f}) 還有優化空間。若採用 **`{ai_best_sharpe['策略名稱']}`** (例如 {', '.join([f'{k.split(' ')[0]} {v}%' for k,v in ai_candidates[ai_best_sharpe['策略名稱']]['wts'].items()])})，能將夏普值進一步推升至 **{ai_best_sharpe['夏普值']:.3f}**，達成更完美的風險收益比。")
-            else:
-                st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n系統經過多重邊界探索後判定，您表格中的 **`{best_sharpe['策略名稱']}`** 已是非常頂尖的平衡配置 (夏普值 {best_sharpe['夏普值']:.3f})，無須再做大幅度修改。")
+            # 定義三組 AI 隱藏候選策略
+            ai_candidates = {
+                "✨ AI 推薦：極致夏普 (高CP值)": {"wts": {"QQQ (美股大盤)": 45.0, "QLD (美股正2)": 15.0, "SGOV (美股超短債)": 40.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 11.0},
+                "✨ AI 推薦：鐵壁防禦 (極低回撤)": {"wts": {"QQQ (美股大盤)": 50.0, "QLD (美股正2)": 0.0, "SGOV (美股超短債)": 50.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 10.0},
+                "✨ AI 推薦：極致增長 (高風險報酬)": {"wts": {"QQQ (美股大盤)": 30.0, "QLD (美股正2)": 45.0, "SGOV (美股超短債)": 25.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 5.0}
+            }
+            
+            ai_results = []
+            for ai_name, ai_config in ai_candidates.items():
+                res = calculate_metrics(ai_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value)
+                res["策略名稱"] = ai_name
+                ai_results.append(res)
+                
+            df_ai = pd.DataFrame(ai_results)
+            df_ai_valid = df_ai[df_ai["狀態"] == "安全存活"]
+            
+            # 💥 嚴格過濾：找出「不含 SPY」的現有最佳策略當作假想敵
+            df_comp_no_spy = valid_df[~valid_df["策略名稱"].str.contains("SPY")]
+            
+            if not df_comp_no_spy.empty and not df_ai_valid.empty:
+                best_sharpe_no_spy = df_comp_no_spy.loc[df_comp_no_spy["夏普值"].idxmax()]
+                best_mdd_no_spy = df_comp_no_spy.loc[df_comp_no_spy["最大回撤"].idxmax()] 
+                best_equity_no_spy = df_comp_no_spy.loc[df_comp_no_spy["最終淨值"].idxmax()]
+                
+                # Helper function for formatting AI wts
+                def format_ai_wts(config):
+                    wts_str = " + ".join([f"{k.split(' ')[0]} {v}%" for k, v in config["wts"].items() if v > 0])
+                    margin_str = f"目標維持率 {int(config['target_margin']*100)}%" if config['debt_mode'] == "恆定維持率 (增貸再投資)" else config['debt_mode']
+                    return f"**`{wts_str}`** (再平衡: CLEC ｜ {margin_str})"
 
-            # 判斷 2: 最大回撤優化
-            ai_best_mdd = df_ai_valid.loc[df_ai_valid["最大回撤"].idxmax()]
-            if ai_best_mdd["最大回撤"] > best_mdd["最大回撤"]:
-                st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n若您覺得 `{best_mdd['策略名稱']}` 的跌幅 ({best_mdd['最大回撤']*100:.2f}%) 仍太高，系統建議改採 **`{ai_best_mdd['策略名稱']}`**。透過擴大現金水庫並捨棄正2槓桿，能成功將回撤壓低至 **{ai_best_mdd['最大回撤']*100:.2f}%**，讓您的痛苦指數降到最低。")
-            else:
-                st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n系統判斷您表格內的 **`{best_mdd['策略名稱']}`** 已具備極致的抗跌能力 (最大回撤僅 {best_mdd['最大回撤']*100:.2f}%)，它已經是目前區間內最優秀的防禦盾牌。")
+                st.info(f"系統已根據您選擇的 `{start_date} ~ {end_date}` 區間進行了背景運算。針對您追求的不同目標，系統為您判斷出以下能超越當前 QQQ 常規對照組的『實戰黃金比例』建議：")
 
-            # 判斷 3: 最終淨值優化
-            ai_best_equity = df_ai_valid.loc[df_ai_valid["最終淨值"].idxmax()]
-            if ai_best_equity["最終淨值"] > best_equity["最終淨值"]:
-                st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n系統察覺到 `{best_equity['策略名稱']}` 的絕對報酬仍未達極限。若您能承受較高的波動，切換至 **`{ai_best_equity['策略名稱']}`**，能將最終淨值進一步推升至 **NT$ {ai_best_equity['最終淨值']:,.0f}** (對標 Beta 約 {ai_best_equity['對標 Beta']:.2f})，榨出比大盤更驚人的長線複利！")
-            else:
-                st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n系統推演後確認，您目前的 **`{best_equity['策略名稱']}`** 就是這段時間內的印鈔機 (最終淨值 NT$ {best_equity['最終淨值']:,.0f})，任何更高槓桿的嘗試都會在此區間遭遇斷頭或嚴重的耗損反噬，保持現狀即是最佳解。")
+                # 判斷 1: 夏普值優化
+                ai_best_sharpe = df_ai_valid.loc[df_ai_valid["夏普值"].idxmax()]
+                if ai_best_sharpe["夏普值"] > best_sharpe_no_spy["夏普值"]:
+                    wts_desc = format_ai_wts(ai_candidates[ai_best_sharpe["策略名稱"]])
+                    st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n目前以 QQQ 為基底的最佳 CP 值是 `{best_sharpe_no_spy['策略名稱']}` (夏普值 {best_sharpe_no_spy['夏普值']:.3f})。若您想進一步優化，系統建議改採 **{ai_best_sharpe['策略名稱']}**。\n\n* **具體配比**：{wts_desc}\n* **模擬成效**：成功將夏普值推升至 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)，達成完美的風險收益平衡。")
+                else:
+                    st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n系統經過多重邊界探索後判定，您表格中的 **`{best_sharpe_no_spy['策略名稱']}`** 已是目前對標 QQQ 中極為頂尖的平衡配置 (夏普值 {best_sharpe_no_spy['夏普值']:.3f})，無須再做大幅度修改。")
+
+                # 判斷 2: 最大回撤優化
+                ai_best_mdd = df_ai_valid.loc[df_ai_valid["最大回撤"].idxmax()]
+                if ai_best_mdd["最大回撤"] > best_mdd_no_spy["最大回撤"]:
+                    wts_desc = format_ai_wts(ai_candidates[ai_best_mdd["策略名稱"]])
+                    st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n目前最佳防禦是 `{best_mdd_no_spy['策略名稱']}` (回撤 {best_mdd_no_spy['最大回撤']*100:.2f}%)。若您覺得跌幅仍太高，系統建議改採 **{ai_best_mdd['策略名稱']}**。\n\n* **具體配比**：{wts_desc}\n* **模擬成效**：透過擴大現金水庫並捨棄正2槓桿，成功將極限回撤壓低至 **{ai_best_mdd['最大回撤']*100:.2f}%**，讓痛苦指數降到極低的 {ai_best_mdd['痛苦指數']:.2f}。")
+                else:
+                    st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n系統判斷您表格內的 **`{best_mdd_no_spy['策略名稱']}`** 已具備極致的抗跌能力 (最大回撤僅 {best_mdd_no_spy['最大回撤']*100:.2f}%)，它已經是目前區間內最優秀的防禦盾牌。")
+
+                # 判斷 3: 最終淨值優化
+                ai_best_equity = df_ai_valid.loc[df_ai_valid["最終淨值"].idxmax()]
+                if ai_best_equity["最終淨值"] > best_equity_no_spy["最終淨值"]:
+                    wts_desc = format_ai_wts(ai_candidates[ai_best_equity["策略名稱"]])
+                    st.error(f"🔥 **目標：極致的最終淨值 (賺得比純 QQQ 更多)**\n\n目前獲利王是 `{best_equity_no_spy['策略名稱']}`。系統察覺到其絕對報酬仍未達極限，若您心臟夠大，建議切換至 **{ai_best_equity['策略名稱']}**。\n\n* **具體配比**：{wts_desc}\n* **模擬成效**：將最終淨值進一步推升至 **NT$ {ai_best_equity['最終淨值']:,.0f}**，榨出比大盤更驚人的長線複利！(注意：對標 Beta 將高達 {ai_best_equity['對標 Beta']:.2f})")
+                else:
+                    st.error(f"🔥 **目標：極致的最終淨值 (賺得比純 QQQ 更多)**\n\n系統推演後確認，您目前的 **`{best_equity_no_spy['策略名稱']}`** 就是這段時間內的無敵印鈔機 (最終淨值 NT$ {best_equity_no_spy['最終淨值']:,.0f})，任何更高槓桿的嘗試都會在此區間遭遇斷頭或嚴重耗損，保持現狀即是最佳解。")
