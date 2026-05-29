@@ -101,7 +101,7 @@ if 'asset_library' not in st.session_state:
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
-    "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 4.0},
+    "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
     "穩健 623 (恆定維持率 600%)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
     "防禦 812 (恆定維持率 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0}
 }
@@ -206,7 +206,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (💥 修復：擔保品嚴格排除短債)
+# 4. 核心計算引擎 (💥 三軌維持率修正版)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -265,6 +265,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     strategy_annuals = {}
     equity_curve = [] 
     reg_margin_curve = [] 
+    total_margin_curve = [] # 💥 新增總擔保維持率
     bond_margin_curve = [] 
     total_withdrawn = 0.0
     is_bankrupt = False
@@ -276,6 +277,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         if is_bankrupt:
             equity_curve.append({"日期": date, "淨值": 0.0, "負債": current_debt_amount})
             reg_margin_curve.append({"日期": date, "法規維持率": 0.0})
+            total_margin_curve.append({"日期": date, "總擔保維持率": 0.0})
             bond_margin_curve.append({"日期": date, "純債維持率": 0.0})
             if date in eoy_dates: strategy_annuals[date.year] = -1.0
             continue
@@ -319,15 +321,17 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 💥 核心修正：法規擔保品 (legal_collateral) 嚴格只計算 "Prototype"，不再計入 "Defensive" (短債/現金)
-        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
-        bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
+        # 💥 三軌維持率核心計算邏輯
+        prototype_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
+        defensive_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
+        total_collateral = prototype_collateral + defensive_collateral
+        
+        # 法規維持率：嚴格只採計原型 ETF
+        legal_collateral = prototype_collateral
         
         current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
-        current_bond_margin = bond_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
-        
-        display_reg = min(current_reg_margin, 10.0)
-        display_bond = min(current_bond_margin, 10.0)
+        current_total_margin = total_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
+        current_bond_margin = defensive_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         
         if portfolio_equity <= 0:
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_date = date.strftime("%Y-%m-%d"); bankruptcy_reason = "淨值歸零"
@@ -335,8 +339,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             portfolio_equity = 0; is_bankrupt = True; bankruptcy_date = date.strftime("%Y-%m-%d"); bankruptcy_reason = "觸及 140% 斷頭"
 
         equity_curve.append({"日期": date, "淨值": portfolio_equity, "負債": current_debt_amount})
-        reg_margin_curve.append({"日期": date, "法規維持率": display_reg})
-        bond_margin_curve.append({"日期": date, "純債維持率": display_bond})
+        reg_margin_curve.append({"日期": date, "法規維持率": min(current_reg_margin, 10.0)})
+        total_margin_curve.append({"日期": date, "總擔保維持率": min(current_total_margin, 10.0)})
+        bond_margin_curve.append({"日期": date, "純債維持率": min(current_bond_margin, 10.0)})
             
         if date in eoy_dates and not is_bankrupt:
             strategy_annuals[date.year] = (portfolio_equity / prev_eoy_equity) - 1.0 if prev_eoy_equity > 0 else 0
@@ -363,6 +368,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     if name in current_asset_amounts:
                         current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
 
+            # 💥 恆定維持率增貸，僅以法規擔保品 (原型) 計算
             if debt_mode == "恆定維持率 (增貸再投資)":
                 if legal_collateral > 0 and current_reg_margin > target_margin_ratio:
                     new_loan = (legal_collateral / target_margin_ratio) - current_debt_amount
@@ -406,7 +412,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         "CAGR": cagr, "最終淨值": portfolio_equity, "年化波動": real_vol,
         "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "修復天數": max_recovery_days, "痛苦指數": ulcer_index,
         "累計提領": total_withdrawn, "狀態": final_status,
-        "annuals": strategy_annuals, "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
+        "annuals": strategy_annuals, "curve": equity_curve, 
+        "reg_margin_curve": reg_margin_curve, "total_margin_curve": total_margin_curve, "bond_margin_curve": bond_margin_curve, 
+        "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
     }
 
@@ -468,6 +476,7 @@ comp_data = []
 annual_chart_data = []
 curve_chart_data = []
 reg_margin_chart_data = []
+total_margin_chart_data = []
 bond_margin_chart_data = []
 
 all_strategies = {}
@@ -482,6 +491,7 @@ with st.spinner("⏳ 核心引擎運作中..."):
         for year, ret in res["annuals"].items(): annual_chart_data.append({"策略名稱": name, "年份": year, "報酬率": ret, "類型": res["類型"]})
         for pt in res["curve"]: curve_chart_data.append({"策略名稱": name, "日期": pt["日期"], "淨值": pt["淨值"]})
         for pt in res["reg_margin_curve"]: reg_margin_chart_data.append({"策略名稱": name, "日期": pt["日期"], "法規維持率": pt["法規維持率"]})
+        for pt in res["total_margin_curve"]: total_margin_chart_data.append({"策略名稱": name, "日期": pt["日期"], "總擔保維持率": pt["總擔保維持率"]})
         for pt in res["bond_margin_curve"]: bond_margin_chart_data.append({"策略名稱": name, "日期": pt["日期"], "純債維持率": pt["純債維持率"]})
 
 df_comp = pd.DataFrame(comp_data)
@@ -618,26 +628,40 @@ if not df_comp.empty:
         st.plotly_chart(fig_curves, use_container_width=True)
         
     st.markdown("---")
-    st.subheader("🚨 雙軌風險防線追蹤圖 (維持率觀測)")
-    col_m1, col_m2 = st.columns(2)
+    
+    # 💥 全新三軌風險防線追蹤圖
+    st.subheader("🚨 三軌風險防線追蹤圖 (維持率觀測)")
+    col_m1, col_m2, col_m3 = st.columns(3)
+    
     with col_m1:
-        st.subheader("1. 法規維持率追蹤線 (原型+短債)")
+        st.subheader("1. 法規維持率 (僅計原型)")
         if reg_margin_chart_data:
             df_reg = pd.DataFrame(reg_margin_chart_data)
             df_reg_sampled = df_reg.iloc[::5, :]
             fig_reg = px.line(df_reg_sampled, x="日期", y="法規維持率", color="策略名稱", color_discrete_map=color_map)
             fig_reg.add_hline(y=1.4, line_dash="dash", line_color="red", annotation_text="140% 斷頭線")
-            fig_reg.update_layout(yaxis_tickformat='.0%', yaxis_title="維持率", xaxis_title="日期", height=400)
+            fig_reg.update_layout(yaxis_tickformat='.0%', yaxis_title="法規維持率", xaxis_title="日期", height=400, showlegend=False)
             fig_reg.update_yaxes(range=[0, 10])
             st.plotly_chart(fig_reg, use_container_width=True)
+            
     with col_m2:
-        st.subheader("2. 純債安全維持率追蹤線 (僅計短債)")
+        st.subheader("2. 總擔保維持率 (原型+短債)")
+        if total_margin_chart_data:
+            df_total = pd.DataFrame(total_margin_chart_data)
+            df_total_sampled = df_total.iloc[::5, :]
+            fig_total = px.line(df_total_sampled, x="日期", y="總擔保維持率", color="策略名稱", color_discrete_map=color_map)
+            fig_total.update_layout(yaxis_tickformat='.0%', yaxis_title="總擔保維持率", xaxis_title="日期", height=400, showlegend=False)
+            fig_total.update_yaxes(range=[0, 10])
+            st.plotly_chart(fig_total, use_container_width=True)
+            
+    with col_m3:
+        st.subheader("3. 純債安全維持率 (僅計短債)")
         if bond_margin_chart_data:
             df_bond = pd.DataFrame(bond_margin_chart_data)
             df_bond_sampled = df_bond.iloc[::5, :]
             fig_bond = px.line(df_bond_sampled, x="日期", y="純債維持率", color="策略名稱", color_discrete_map=color_map)
             fig_bond.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="100% 短債枯竭線")
-            fig_bond.update_layout(yaxis_tickformat='.0%', yaxis_title="純債維持率", xaxis_title="日期", height=400)
+            fig_bond.update_layout(yaxis_tickformat='.0%', yaxis_title="純債維持率", xaxis_title="日期", height=400, showlegend=False)
             fig_bond.update_yaxes(range=[0, 10])
             st.plotly_chart(fig_bond, use_container_width=True)
 
@@ -651,6 +675,7 @@ if not df_comp.empty:
         
     st.markdown("---")
     
+    # 💥 AI 動態尋優 (嚴格排除破產策略)
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
     if not valid_df.empty:
@@ -660,17 +685,18 @@ if not df_comp.empty:
         if has_qqq_baseline:
             qqq_stats = qqq_baseline.iloc[0]
             
-            with st.spinner("⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，嚴格鎖定 Beta=1.0 尋找超越 QQQ 的黃金比例..."):
+            with st.spinner("⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，嚴格鎖定 Beta=1.0 尋找最優質押黃金比例..."):
                 
                 ai_results = []
+                # 迴圈掃描：保證 W_QQQ + 2*W_QLD = 100 (對標 Beta 恆定為 1.0)
                 for w_qld in [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0]:
                     w_qqq = 100.0 - 2 * w_qld
                     for w_sgov in [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]:
                         debt = (w_qqq + w_qld + w_sgov) - 100.0
                         if debt <= 0: continue 
                         
-                        target_m = (w_qqq + w_sgov) / debt # 這個僅用做紀錄，實際代入的 target_margin 是 w_qqq / debt
-                        actual_target_margin = w_qqq / debt # 💥 對齊真正的恆定維持率邏輯 (僅原型 / 借款)
+                        # 維持率公式：僅使用原型 ETF 作為分子
+                        actual_target_margin = w_qqq / debt 
                         
                         config = {
                             "wts": {"QQQ (美股大盤)": w_qqq, "QLD (美股正2)": w_qld, "SGOV (美股超短債)": w_sgov},
@@ -685,13 +711,15 @@ if not df_comp.empty:
                         ai_results.append(res)
                         
                 df_ai = pd.DataFrame(ai_results)
-                df_ai_valid = df_ai[df_ai["狀態"] == "安全存活"]
+                
+                # 💥 絕對安全防護網：只挑選完全沒有破產，且極限回撤沒有深達 -95% 的策略
+                df_ai_valid = df_ai[(df_ai["狀態"] == "安全存活") & (df_ai["最大回撤"] > -0.95)]
                 
                 def format_ai_wts(row):
                     wts_str = " + ".join([f"{k.split(' ')[0]} {v}%" for k, v in row["wts_config"].items() if v > 0])
                     return f"**`{wts_str}`** (再平衡: CLEC ｜ 恆定維持率 {int(row['target_margin_pct'])}%)"
 
-                st.info(f"系統已根據您選擇的 `{start_date} ~ {end_date}` 區間進行了近百次的背景網格運算。在**「嚴格鎖定對標 Beta = 1.0 (與大盤承擔完全相同的系統風險)」** 的前提下，系統為您找出以下能超越『純抱 QQQ』的實戰黃金比例：")
+                st.info(f"系統已根據您選擇的 `{start_date} ~ {end_date}` 區間進行了近百次的背景網格運算。在**「保證回測期間內絕對存活（不破產）」**且**「嚴格鎖定對標 Beta = 1.0 (承擔相同市場風險)」** 的雙重前提下，系統為您找出以下能超越『純抱 QQQ』的實戰黃金比例：")
 
                 if not df_ai_valid.empty:
                     ai_best_sharpe = df_ai_valid.loc[df_ai_valid["夏普值"].idxmax()]
@@ -704,12 +732,14 @@ if not df_comp.empty:
                     if ai_best_mdd["最大回撤"] > qqq_stats["最大回撤"]:
                         st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n若您覺得純 QQQ 的跌幅 ({qqq_stats['最大回撤']*100:.2f}%) 太高，系統為您找到以下最佳鐵壁防禦：\n\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：透過放大短債並縮減正2耗損，成功將極限回撤壓低至 **{ai_best_mdd['最大回撤']*100:.2f}%**，讓您的痛苦指數從 {qqq_stats['痛苦指數']:.2f} 降至極低的 **{ai_best_mdd['痛苦指數']:.2f}**。")
                     else:
-                        st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n在此區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。但若您希望在維持 Beta=1.0 的槓桿架構下盡可能抗跌，以下是系統找出的**最強防禦亞軍**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})，是所有帶有負債的組合中最抗震的選擇。")
+                        st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n在此區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。但若您希望在維持 Beta=1.0 的槓桿架構下盡可能抗跌，以下是系統找出的**最強防禦亞軍**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})，是所有帶有負債的組合中最抗震的絕對安全選擇。")
 
                     ai_best_equity = df_ai_valid.loc[df_ai_valid["最終淨值"].idxmax()]
                     if ai_best_equity["最終淨值"] > qqq_stats["最終淨值"]:
                         st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n在不增加系統風險 (Beta=1.0) 的前提下，系統發現透過「恆定維持率」的財務工程，能創造更高的絕對獲利：\n\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：將最終淨值推升至 **NT$ {ai_best_equity['最終淨值']:,.0f}** (勝過 QQQ 的 NT$ {qqq_stats['最終淨值']:,.0f})，成功榨出比大盤更驚人的長線複利！")
                     else:
-                        st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。但若您想嘗試利用質押架構逼近極限，以下是**獲利亞軍配比**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)，是所有槓桿質押組合中爆發力最強的設定。")
+                        st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。但若您想嘗試利用質押架構逼近極限，以下是**獲利亞軍配比**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)，是所有「保證不破產」的槓桿質押組合中爆發力最強的設定。")
+                else:
+                    st.error("⚠️ 系統在進行背景網格尋優時，發現在此區間內所有帶有負債的 Beta=1.0 策略均無法安全存活。建議降低提領比例或減少槓桿運用。")
         else:
             st.info("⚠️ 若要啟用 AI 網格尋優對比，請確保 `純抱 QQQ` 策略在您的回測區間內處於安全存活狀態。")
