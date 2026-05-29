@@ -169,7 +169,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎
+# 4. 核心計算引擎 (💥 容錯升級版)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -181,9 +181,25 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     initial_debt_ratio = max(0, initial_total_weight - 100.0)
     sys_beta = 0.0
     
-    master_prices = st.session_state.asset_library["QQQ (美股大盤)"]["prices"]
-    master_slice = master_prices.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
-    trading_days = master_slice.index
+    # 💥 動態尋找主時間軸 (Master Timeline)，避免 QQQ 抓取失敗時當機
+    master_prices = pd.Series(dtype=float)
+    if "QQQ (美股大盤)" in st.session_state.asset_library and not st.session_state.asset_library["QQQ (美股大盤)"]["prices"].empty:
+        master_prices = st.session_state.asset_library["QQQ (美股大盤)"]["prices"]
+    elif "SPY (標普大盤)" in st.session_state.asset_library and not st.session_state.asset_library["SPY (標普大盤)"]["prices"].empty:
+        master_prices = st.session_state.asset_library["SPY (標普大盤)"]["prices"]
+    else:
+        # 如果前兩者都不在，尋找第一個有效的資產價格當作日曆基準
+        for name, asset in st.session_state.asset_library.items():
+            if name not in ["無 (不配置)", "現金"] and not asset.get("prices", pd.Series(dtype=float)).empty:
+                master_prices = asset["prices"]
+                break
+                
+    if master_prices.empty:
+        # 極端情況容錯：產生虛擬商務日曆
+        trading_days = pd.date_range(start=start_date, end=end_date, freq='B')
+    else:
+        master_slice = master_prices.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
+        trading_days = master_slice.index
     
     df_returns = pd.DataFrame(index=trading_days)
     
@@ -239,14 +255,17 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             elif date.date() >= asset_info["inception_date"]:
                 ret = df_returns.loc[date, name]
             else:
+                # 💥 容錯：動態尋找合適的大盤代理報酬率
+                proxy_ret = 0.0
+                if "QQQ (美股大盤)" in df_returns.columns: proxy_ret = df_returns.loc[date, "QQQ (美股大盤)"]
+                elif "SPY (標普大盤)" in df_returns.columns: proxy_ret = df_returns.loc[date, "SPY (標普大盤)"]
+                
                 if asset_info["type"] == "Defensive":
                     ret = 0.02 / 252.0
                 elif asset_info["type"] == "Leverage":
-                    qqq_ret = df_returns.loc[date, "QQQ (美股大盤)"] if "QQQ (美股大盤)" in df_returns.columns else 0.0
-                    ret = qqq_ret * 2.0 - (0.012 / 252.0)
+                    ret = proxy_ret * 2.0 - (0.012 / 252.0)
                 else:
-                    qqq_ret = df_returns.loc[date, "QQQ (美股大盤)"] if "QQQ (美股大盤)" in df_returns.columns else 0.0
-                    ret = qqq_ret
+                    ret = proxy_ret
                     
             current_asset_amounts[name] = amount * (1 + ret)
                 
@@ -459,7 +478,6 @@ if not df_comp.empty:
     df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
     df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
     
-    # 恢復為最簡潔的名詞，去除了括號內的雜訊
     df_display = df_display.rename(columns={
         "年化淨報酬率(CAGR)": "年化淨報酬率 (CAGR/IRR)",
         "最大回撤": "最大回撤 (MDD)"
@@ -473,7 +491,7 @@ if not df_comp.empty:
     
     valid_df = df_comp[df_comp["狀態"] == "安全存活"]
     if not valid_df.empty:
-        best_cagr = valid_df.loc[valid_df["年化淨報酬率 (CAGR/IRR)"].str.rstrip('%').astype(float).idxmax()] if "年化淨報酬率 (CAGR/IRR)" in df_display.columns else valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
+        best_cagr = valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
         best_equity = valid_df.loc[valid_df["最終淨值"].idxmax()]
         best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] 
         best_recovery = valid_df.loc[valid_df["最大修復天數"].idxmin()]
@@ -591,7 +609,6 @@ if not df_comp.empty:
         st.plotly_chart(fig_annual, use_container_width=True)
         
     st.markdown("---")
-    # 💥 全新改版：實戰白話文攻略報告
     st.markdown("### 📝 實戰攻略：如何調配出比「純抱 QQQ」更完美的比例？")
     st.info("""
     不想看學術名詞？直接給你三套「打敗大盤」的實戰調配指南：
