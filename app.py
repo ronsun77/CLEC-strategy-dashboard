@@ -206,7 +206,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (💥 三軌維持率修正版)
+# 4. 核心計算引擎 
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -265,7 +265,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     strategy_annuals = {}
     equity_curve = [] 
     reg_margin_curve = [] 
-    total_margin_curve = [] # 💥 新增總擔保維持率
+    total_margin_curve = [] 
     bond_margin_curve = [] 
     total_withdrawn = 0.0
     is_bankrupt = False
@@ -321,12 +321,10 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 💥 三軌維持率核心計算邏輯
         prototype_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         defensive_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
         total_collateral = prototype_collateral + defensive_collateral
         
-        # 法規維持率：嚴格只採計原型 ETF
         legal_collateral = prototype_collateral
         
         current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
@@ -368,7 +366,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     if name in current_asset_amounts:
                         current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
 
-            # 💥 恆定維持率增貸，僅以法規擔保品 (原型) 計算
             if debt_mode == "恆定維持率 (增貸再投資)":
                 if legal_collateral > 0 and current_reg_margin > target_margin_ratio:
                     new_loan = (legal_collateral / target_margin_ratio) - current_debt_amount
@@ -629,9 +626,11 @@ if not df_comp.empty:
         
     st.markdown("---")
     
-    # 💥 全新三軌風險防線追蹤圖
+    # 💥 確保三軌防線圖擁有底部圖例 (Horizontal Legend)
     st.subheader("🚨 三軌風險防線追蹤圖 (維持率觀測)")
     col_m1, col_m2, col_m3 = st.columns(3)
+    
+    legend_style = dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, title="")
     
     with col_m1:
         st.subheader("1. 法規維持率 (僅計原型)")
@@ -640,7 +639,7 @@ if not df_comp.empty:
             df_reg_sampled = df_reg.iloc[::5, :]
             fig_reg = px.line(df_reg_sampled, x="日期", y="法規維持率", color="策略名稱", color_discrete_map=color_map)
             fig_reg.add_hline(y=1.4, line_dash="dash", line_color="red", annotation_text="140% 斷頭線")
-            fig_reg.update_layout(yaxis_tickformat='.0%', yaxis_title="法規維持率", xaxis_title="日期", height=400, showlegend=False)
+            fig_reg.update_layout(yaxis_tickformat='.0%', yaxis_title="法規維持率", xaxis_title="日期", height=480, showlegend=True, legend=legend_style)
             fig_reg.update_yaxes(range=[0, 10])
             st.plotly_chart(fig_reg, use_container_width=True)
             
@@ -650,7 +649,7 @@ if not df_comp.empty:
             df_total = pd.DataFrame(total_margin_chart_data)
             df_total_sampled = df_total.iloc[::5, :]
             fig_total = px.line(df_total_sampled, x="日期", y="總擔保維持率", color="策略名稱", color_discrete_map=color_map)
-            fig_total.update_layout(yaxis_tickformat='.0%', yaxis_title="總擔保維持率", xaxis_title="日期", height=400, showlegend=False)
+            fig_total.update_layout(yaxis_tickformat='.0%', yaxis_title="總擔保維持率", xaxis_title="日期", height=480, showlegend=True, legend=legend_style)
             fig_total.update_yaxes(range=[0, 10])
             st.plotly_chart(fig_total, use_container_width=True)
             
@@ -661,7 +660,7 @@ if not df_comp.empty:
             df_bond_sampled = df_bond.iloc[::5, :]
             fig_bond = px.line(df_bond_sampled, x="日期", y="純債維持率", color="策略名稱", color_discrete_map=color_map)
             fig_bond.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="100% 短債枯竭線")
-            fig_bond.update_layout(yaxis_tickformat='.0%', yaxis_title="純債維持率", xaxis_title="日期", height=400, showlegend=False)
+            fig_bond.update_layout(yaxis_tickformat='.0%', yaxis_title="純債維持率", xaxis_title="日期", height=480, showlegend=True, legend=legend_style)
             fig_bond.update_yaxes(range=[0, 10])
             st.plotly_chart(fig_bond, use_container_width=True)
 
@@ -675,7 +674,6 @@ if not df_comp.empty:
         
     st.markdown("---")
     
-    # 💥 AI 動態尋優 (嚴格排除破產策略)
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
     if not valid_df.empty:
@@ -688,14 +686,12 @@ if not df_comp.empty:
             with st.spinner("⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，嚴格鎖定 Beta=1.0 尋找最優質押黃金比例..."):
                 
                 ai_results = []
-                # 迴圈掃描：保證 W_QQQ + 2*W_QLD = 100 (對標 Beta 恆定為 1.0)
                 for w_qld in [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0]:
                     w_qqq = 100.0 - 2 * w_qld
                     for w_sgov in [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]:
                         debt = (w_qqq + w_qld + w_sgov) - 100.0
                         if debt <= 0: continue 
                         
-                        # 維持率公式：僅使用原型 ETF 作為分子
                         actual_target_margin = w_qqq / debt 
                         
                         config = {
@@ -712,7 +708,6 @@ if not df_comp.empty:
                         
                 df_ai = pd.DataFrame(ai_results)
                 
-                # 💥 絕對安全防護網：只挑選完全沒有破產，且極限回撤沒有深達 -95% 的策略
                 df_ai_valid = df_ai[(df_ai["狀態"] == "安全存活") & (df_ai["最大回撤"] > -0.95)]
                 
                 def format_ai_wts(row):
