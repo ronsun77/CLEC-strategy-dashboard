@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import plotly.graph_objects go
 import yfinance as yf
 import numpy as np
 import datetime
@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 
+# 1. 自動抓取市場數據函數 (下載完整區間)
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_base_data(ticker, asset_type):
@@ -40,7 +40,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (強制淨化基準表)
+# 2. 初始化預設資產與策略 (強制淨化基準表，移除 SHY)
 # ==========================================
 def load_default_assets():
     lib = {
@@ -71,7 +71,7 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
-# 💥 暴力破解解法：直接無條件覆蓋，徹底刪除殘留在快取裡的 SHY 策略
+# 強制覆蓋基準策略組，徹底拔除 SHY
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
@@ -82,7 +82,7 @@ st.session_state.benchmark_strategies = {
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 💥 解鎖日曆綁架：智慧攔截控制
+# 3. 智慧時間軸控制器 (解鎖日曆綁架)
 # ==========================================
 st.sidebar.markdown("### 歷史回測與分析引擎")
 
@@ -100,6 +100,7 @@ for asset in active_assets:
     if inc_date > max_inception_date and asset not in ["無 (不配置)", "現金"]: 
         max_inception_date = inc_date
 
+# 顯性合成引擎控制開關
 enable_synthetic = st.sidebar.checkbox("🚀 啟用智能合成代理引擎 (解鎖發行日前回測)", value=False, help="啟用後，尚未掛牌的資產將自動使用歷史基準(如聯邦基金利率或QQQ)進行代理回填，允許回測跨越 2008 年金融海嘯。")
 
 if 'start_date' not in st.session_state:
@@ -107,25 +108,26 @@ if 'start_date' not in st.session_state:
 if 'end_date' not in st.session_state:
     st.session_state.end_date = datetime.date.today()
 
-# 💥 完全解鎖 st.date_input 的限制，讓使用者可以自由點選日曆
+# 💥 徹底解鎖：允許使用者自由點選日曆上的任何年份，底層限制最小至 1999 年
+min_historical_limit = datetime.date(1999, 1, 4)
 col_d1, col_d2 = st.sidebar.columns(2)
 with col_d1:
-    start_date = st.date_input("回測起始日", value=st.session_state.start_date, max_value=datetime.date.today())
+    start_date = st.date_input("回測起始日", value=st.session_state.start_date, min_value=min_historical_limit, max_value=datetime.date.today())
 with col_d2:
-    end_date = st.date_input("回測結束日", value=st.session_state.end_date, max_value=datetime.date.today())
+    end_date = st.date_input("回測結束日", value=st.session_state.end_date, min_value=min_historical_limit, max_value=datetime.date.today())
 
 st.session_state.start_date = start_date
 st.session_state.end_date = end_date
 
-# 💥 改用「後發制人」的智慧攔截：如果選的日期太早且未開合成，直接跳出錯誤並暫停運算
-min_allowed_date = datetime.date(1999, 1, 4) if enable_synthetic else max_inception_date
+# 💥 智慧型攔截風控提示
+min_allowed_date = min_historical_limit if enable_synthetic else max_inception_date
 
 if start_date < min_allowed_date:
     if not enable_synthetic:
-        st.sidebar.error(f"⚠️ **未啟用合成引擎**\\n\\n為保證 100% 真實數據，目前配置中最年輕的資產為 {max_inception_date} 發行。\\n\\n👉 **解法 1**：請勾選上方「🚀 啟用智能合成代理引擎」。\\n👉 **解法 2**：請將回測起始日調整至 {max_inception_date} 之後。")
+        st.sidebar.error(f"⚠️ **未啟用合成引擎**\n\n您選擇了 {start_date}，但目前配置中部位的最晚掛牌日為 {max_inception_date}。\n\n👉 **請勾選上方「🚀 啟用智能合成代理引擎」** 進行歷史數據回填，即可自由解鎖往前的年份（如 2008 年金融海嘯）！")
     else:
-        st.sidebar.error(f"⚠️ 系統極限數據最早僅支援至 1999 年。")
-    st.stop() # 停止程式往下跑，等待使用者調整
+        st.sidebar.error(f"⚠️ 系統日線數據最早僅支援至 1999 年 1 月 4 日。")
+    st.stop() # 智慧攔截，暫停往下渲染
 
 st.sidebar.markdown("---")
 margin_rate = st.sidebar.number_input("質押借貸利率 (%)", 0.0, 10.0, 2.5, 0.1) / 100.0
@@ -170,7 +172,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (無縫銜接代理技術)
+# 4. 核心計算引擎 (日線高頻 + 代理合成技術)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
