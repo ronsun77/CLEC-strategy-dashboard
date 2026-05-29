@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 
+# 1. 自動抓取市場數據函數 (下載完整區間)
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_base_data(ticker, asset_type):
@@ -40,7 +40,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略
+# 2. 初始化預設資產與策略 (納入 812 常駐)
 # ==========================================
 def load_default_assets():
     lib = {
@@ -65,24 +65,26 @@ def load_default_assets():
         data, _ = fetch_asset_base_data(ticker, a_type)
         if data:
             data["beta"] = beta
+            st.session_state.asset_library = st.session_state.get('asset_library', {})
             lib[display_name] = data
     return lib
 
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
-if 'benchmark_strategies' not in st.session_state:
-    st.session_state.benchmark_strategies = {
-        "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
-        "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
-        "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
-        "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0}
-    }
+# 💥 核心強制重寫：將 812 策略永久納入內建固定比較表
+st.session_state.benchmark_strategies = {
+    "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
+    "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
+    "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
+    "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
+    "防禦 812 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 10.0}
+}
 
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 智慧時間軸控制器 
+# 3. 智慧時間軸控制器 (解鎖日曆綁架)
 # ==========================================
 st.sidebar.markdown("### 歷史回測與分析引擎")
 
@@ -100,7 +102,7 @@ for asset in active_assets:
     if inc_date > max_inception_date and asset not in ["無 (不配置)", "現金"]: 
         max_inception_date = inc_date
 
-enable_synthetic = st.sidebar.checkbox("🚀 啟用智能合成代理引擎 (解鎖發行日前回測)", value=False, help="啟用後，尚未掛牌的資產將自動使用歷史基準(如聯邦基金利率或QQQ)進行代理回填，允許回測跨越 2008 年金融海嘯。")
+enable_synthetic = st.sidebar.checkbox("🚀 啟用智能合成代理引擎 (解鎖發行日前回測)", value=False)
 
 if 'start_date' not in st.session_state:
     st.session_state.start_date = max_inception_date
@@ -169,7 +171,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 
+# 4. 核心計算引擎 (逐日計息，年度再平衡與增貸)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -229,6 +231,8 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             if date in eoy_dates: strategy_annuals[date.year] = -1.0
             continue
             
+        row = df_returns.loc[date]
+        
         for name, amount in current_asset_amounts.items():
             if name not in st.session_state.asset_library or amount <= 0:
                 continue
@@ -284,6 +288,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         reg_margin_curve.append({"日期": date, "法規維持率": display_reg})
         bond_margin_curve.append({"日期": date, "純債維持率": display_bond})
             
+        # 💥 只有到了一年一度的年底交易日，才會觸發 CLEC 再平衡與維持率增貸
         if date in eoy_dates and not is_bankrupt:
             strategy_annuals[date.year] = (portfolio_equity / prev_eoy_equity) - 1.0 if prev_eoy_equity > 0 else 0
             prev_eoy_equity = portfolio_equity
@@ -450,22 +455,20 @@ if not df_comp.empty:
     with col1:
         st.subheader("💰 最終資產淨值排行 (NT$)")
         df_chart_multiple = df_comp.sort_values(by="最終淨值", ascending=True)
-        # 💥 修復 1：增加 X 軸空間，避免大數字被切掉
         max_val = df_chart_multiple["最終淨值"].max()
         fig_mult = px.bar(df_chart_multiple, x="最終淨值", y="策略名稱", color="類型", orientation='h', text="最終淨值",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_mult.update_layout(xaxis=dict(range=[0, max_val * 1.3]))
+        fig_mult.update_layout(xaxis=dict(range=[0, max_val * 1.35])) # 💥 再向右拓寬
         fig_mult.update_traces(texttemplate='NT$ %{text:,.0f}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_mult, use_container_width=True)
         
     with col2:
         st.subheader("🛡 壓力測試：最大回撤 (MDD)")
         df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
-        # 💥 修復 2：增加負向 X 軸空間
         min_mdd = df_chart_mdd["最大回撤"].min()
         fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="類型", orientation='h', text="最大回撤",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_mdd.update_layout(xaxis=dict(range=[min_mdd * 1.25, 0]), xaxis_tickformat='.0%')
+        fig_mdd.update_layout(xaxis=dict(range=[min_mdd * 1.3, 0]), xaxis_tickformat='.0%') # 💥 再向左拓寬
         fig_mdd.update_traces(texttemplate='%{text:.2%}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_mdd, use_container_width=True)
 
@@ -476,7 +479,7 @@ if not df_comp.empty:
         max_calmar = df_chart_calmar["卡瑪比率"].max()
         fig_calmar = px.bar(df_chart_calmar, x="卡瑪比率", y="策略名稱", color="類型", orientation='h', text="卡瑪比率",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_calmar.update_layout(xaxis=dict(range=[0, max_calmar * 1.2]))
+        fig_calmar.update_layout(xaxis=dict(range=[0, max_calmar * 1.25]))
         fig_calmar.update_traces(texttemplate='%{text:.3f}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_calmar, use_container_width=True)
         
@@ -486,7 +489,7 @@ if not df_comp.empty:
         max_rec = df_chart_rec["最大修復天數"].max()
         fig_rec = px.bar(df_chart_rec, x="最大修復天數", y="策略名稱", color="類型", orientation='h', text="最大修復天數",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_rec.update_layout(xaxis=dict(range=[0, max_rec * 1.25]))
+        fig_rec.update_layout(xaxis=dict(range=[0, max_rec * 1.35]))
         df_display_rec_text = df_chart_rec["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
         fig_rec.update_traces(text=df_display_rec_text, textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_rec, use_container_width=True)
@@ -531,7 +534,8 @@ if not df_comp.empty:
             "純抱 SPY": "#c7c7c7", 
             "純抱 QQQ": "#7f7f7f", 
             "經典 CLEC 433 (買借死)": "#1f77b4", 
-            "穩健 623 (恆定增貸)": "#ff7f0e"
+            "穩健 623 (恆定增貸)": "#ff7f0e",
+            "防禦 812 (恆定增貸)": "#2ca02c" # 💥 同步加上 812 專屬色系
         }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
