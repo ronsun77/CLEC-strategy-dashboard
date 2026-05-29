@@ -206,7 +206,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (💥 加入自動防禦機制)
+# 4. 核心計算引擎 
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -285,7 +285,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             if date in eoy_dates: strategy_annuals[date.year] = -1.0
             continue
             
-        # 1. 每日市場漲跌結算
         for name, amount in current_asset_amounts.items():
             if name not in st.session_state.asset_library or amount <= 0:
                 continue
@@ -309,7 +308,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     
             current_asset_amounts[name] = amount * (1 + ret)
                 
-        # 2. 利息與提領結算
         interest_cost = current_debt_amount * daily_interest_rate
         current_debt_amount += interest_cost
         
@@ -326,14 +324,12 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 💥 3. 自動防禦機制 (Auto-Margin Defense)
-        # 只要維持率跌破 160%，主動賣出防守短債來償還借貸，保護維持率不被斷頭
+        # 自動化防禦機制 (Auto-Margin Defense)
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         
         if current_debt_amount > 0:
             current_reg_margin = legal_collateral / current_debt_amount
             if current_reg_margin < 1.60:
-                # 計算要將維持率拉回 1.6 所需的目標負債
                 target_debt = legal_collateral / 1.60
                 shortfall = current_debt_amount - target_debt
                 if shortfall > 0:
@@ -345,7 +341,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                             shortfall -= repay
                             if shortfall <= 0: break
 
-        # 4. 更新最新狀態並記錄
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         defensive_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
         total_collateral = legal_collateral + defensive_collateral
@@ -364,7 +359,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         total_margin_curve.append({"日期": date, "總擔保維持率": min(current_total_margin, 10.0)})
         bond_margin_curve.append({"日期": date, "純債維持率": min(current_bond_margin, 10.0)})
         
-        # 5. 彈性再平衡觸發檢查
         if not is_bankrupt and rebalance_type in ["CLEC彈性(防守)", "CLEC彈性(進取)"]:
             is_defensive = (rebalance_type == "CLEC彈性(防守)")
             threshold_up = 1.15 if is_defensive else 1.25
@@ -404,7 +398,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 last_rebal_equity = portfolio_equity
                 last_rebal_assets = current_asset_amounts.copy()
             
-        # 6. 年底常規再平衡
         if date in eoy_dates and not is_bankrupt:
             strategy_annuals[date.year] = (portfolio_equity / prev_eoy_equity) - 1.0 if prev_eoy_equity > 0 else 0
             prev_eoy_equity = portfolio_equity
@@ -750,7 +743,7 @@ if not df_comp.empty:
         
     st.markdown("---")
     
-    # 💥 徹底移除底色的清爽版 AI 報告
+    # 💥 全新版：無底色的純淨文字 AI 報告，嚴格過濾 400% 維持率門檻
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
     if not valid_df.empty:
@@ -772,6 +765,9 @@ if not df_comp.empty:
                             
                             actual_target_margin = w_qqq / debt 
                             
+                            # 💥 嚴格防呆：過濾掉目標維持率小於 400% 的自殺式設定
+                            if actual_target_margin < 4.0: continue
+                            
                             config = {
                                 "wts": {"QQQ (美股大盤)": w_qqq, "QLD (美股正2)": w_qld, "SGOV (美股超短債)": w_sgov},
                                 "rebal": rebal_ai,
@@ -786,6 +782,8 @@ if not df_comp.empty:
                             ai_results.append(res)
                         
                 df_ai = pd.DataFrame(ai_results)
+                
+                # 再次嚴格篩選：只挑選完全沒有破產，且極限回撤沒有深達 -95% 的策略
                 df_ai_valid = df_ai[(df_ai["狀態"] == "安全存活") & (df_ai["最大回撤"] > -0.95)]
                 
                 def format_ai_wts(row):
