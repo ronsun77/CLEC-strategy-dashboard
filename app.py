@@ -57,6 +57,7 @@ def load_default_assets():
         ("00631L.TW", "00631L (台股正2)", "Leverage", 2.0),
         ("00670L.TW", "00670L (美股正2)", "Leverage", 2.0),
         ("SGOV", "SGOV (美股超短債)", "Defensive", 0.0),
+        ("SHY", "SHY (1-3年短債)", "Defensive", 0.0),
         ("00865B.TW", "00865B (台股短債)", "Defensive", 0.0),
         ("00859B.TW", "00859B (台股投資級債)", "Defensive", 0.0)
     ]
@@ -168,7 +169,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (加入痛苦指數運算)
+# 4. 核心計算引擎
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -331,7 +332,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         drop_groups = (~is_underwater).cumsum()[is_underwater]
         max_recovery_days = int(drop_groups.value_counts().max() * (365.25 / 252)) if not drop_groups.empty else 0
         
-        # 💥 新增：痛苦指數 (Ulcer Index) 計算
         if is_underwater.any():
             drawdowns_pct = df_curve["水下回撤"] * 100
             ulcer_index = np.sqrt(np.mean(drawdowns_pct ** 2))
@@ -431,14 +431,46 @@ df_comp = pd.DataFrame(comp_data)
 
 if not df_comp.empty:
     
-    # 💥 新增：最佳配置方案評估面板 (KPI 儀表板)
+    # 💥 1. 調整順序：先把原始表格放在最上面，並加上名詞解釋
+    st.subheader("📊 績效比較表")
+    
+    with st.expander("📖 點擊查看量化指標白話文說明"):
+        st.markdown("""
+        * **夏普值 (Sharpe Ratio)**：每承受 1 單位波動風險，能換取多少超額報酬。越高越好，大於 1 算優秀，代表這套策略「漲得穩」。
+        * **卡瑪比率 (Calmar Ratio)**：年化報酬率除以最大回撤的絕對值。衡量你「每忍受 1% 的極限跌幅，每年能賺回多少利潤」。數值越高，代表遇到股災時的 CP 值越高。
+        * **痛苦指數 (Ulcer Index)**：不只看跌多深，還看你在水下「憋氣套牢了多久」。數值越低越好，越低代表投資人晚上睡得越安穩。
+        """)
+    
+    cols_order = [
+        "策略名稱", "負債模式", "再平衡", "狀態", 
+        "系統 Beta", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", "痛苦指數", 
+        "夏普值", "卡瑪比率", "最大修復天數", "最終淨值", "累計提領生活費"
+    ]
+    df_display = df_comp[cols_order].copy()
+    
+    df_display["系統 Beta"] = df_display["系統 Beta"].apply(lambda x: f"{x:.2f}")
+    df_display["年化淨報酬率(CAGR)"] = df_display["年化淨報酬率(CAGR)"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["年化波動率"] = df_display["年化波動率"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["痛苦指數"] = df_display["痛苦指數"].apply(lambda x: f"{x:.2f}")
+    df_display["夏普值"] = df_display["夏普值"].apply(lambda x: f"{x:.3f}")
+    df_display["卡瑪比率"] = df_display["卡瑪比率"].apply(lambda x: f"{x:.3f}")
+    df_display["最大修復天數"] = df_display["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
+    df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
+    df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
+    
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    
+    # 💥 2. 將最佳配置方案移到表格下方
     st.markdown("### 👑 最佳配置方案評估")
     
     valid_df = df_comp[df_comp["狀態"] == "安全存活"]
     if not valid_df.empty:
         best_cagr = valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
         best_equity = valid_df.loc[valid_df["最終淨值"].idxmax()]
-        best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] # 負數中最大的最接近 0，即跌幅最小
+        best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] 
         best_recovery = valid_df.loc[valid_df["最大修復天數"].idxmin()]
         best_ulcer = valid_df.loc[valid_df["痛苦指數"].idxmin()]
         best_sharpe = valid_df.loc[valid_df["夏普值"].idxmax()]
@@ -464,29 +496,6 @@ if not df_comp.empty:
         with c7: st.success(f"**最高卡瑪比率 (收益/風險)**\n\n### {best_calmar['卡瑪比率']:.3f}\n\n🏆 冠軍策略：`{best_calmar['策略名稱']}`")
     else:
         st.error("⚠️ 壓力測試失敗：在您設定的條件下，所有策略均已宣告破產，無法產生最佳方案評估。")
-
-    st.markdown("---")
-    st.subheader("📊 績效比較表")
-    
-    cols_order = [
-        "策略名稱", "負債模式", "再平衡", "狀態", 
-        "系統 Beta", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", "痛苦指數", 
-        "夏普值", "卡瑪比率", "最大修復天數", "最終淨值", "累計提領生活費"
-    ]
-    df_display = df_comp[cols_order].copy()
-    
-    df_display["系統 Beta"] = df_display["系統 Beta"].apply(lambda x: f"{x:.2f}")
-    df_display["年化淨報酬率(CAGR)"] = df_display["年化淨報酬率(CAGR)"].apply(lambda x: f"{x*100:.2f}%")
-    df_display["年化波動率"] = df_display["年化波動率"].apply(lambda x: f"{x*100:.2f}%")
-    df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
-    df_display["痛苦指數"] = df_display["痛苦指數"].apply(lambda x: f"{x:.2f}")
-    df_display["夏普值"] = df_display["夏普值"].apply(lambda x: f"{x:.3f}")
-    df_display["卡瑪比率"] = df_display["卡瑪比率"].apply(lambda x: f"{x:.3f}")
-    df_display["最大修復天數"] = df_display["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
-    df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
-    df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
-    
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     col1, col2 = st.columns(2)
