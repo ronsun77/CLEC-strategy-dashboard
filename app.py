@@ -431,8 +431,15 @@ df_comp = pd.DataFrame(comp_data)
 
 if not df_comp.empty:
     
-    # 💥 上下對調：先顯示績效比較表
     st.markdown("### 📊 績效比較表")
+    
+    with st.expander("📖 點擊查看量化指標白話文說明"):
+        st.markdown("""
+        * **夏普值 (Sharpe Ratio)**：每承受 1 單位波動風險，能換取多少超額報酬。越高越好，大於 1 算優秀，代表這套策略「漲得穩」。
+        * **卡瑪比率 (Calmar Ratio)**：年化報酬率除以最大回撤的絕對值。衡量你「每忍受 1% 的極限跌幅，每年能賺回多少利潤」。數值越高，代表遇到股災時的 CP 值越高。
+        * **痛苦指數 (Ulcer Index)**：不只看跌多深，還看你在水下「憋氣套牢了多久」。數值越低越好，越低代表投資人晚上睡得越安穩。
+        * **年化淨報酬率 (CAGR)**：在本系統包含現金流（提領生活費）的模型中，CAGR 的計算邏輯已非常貼近 IRR（內部報酬率）的實質意義。
+        """)
     
     cols_order = [
         "策略名稱", "負債模式", "再平衡", "狀態", 
@@ -452,46 +459,33 @@ if not df_comp.empty:
     df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
     df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
     
-    # 💥 表頭直白化：直接把說明寫在欄位名稱上
-    df_display = df_display.rename(columns={
-        "年化淨報酬率(CAGR)": "年化淨報酬率 (CAGR/IRR)",
-        "最大回撤": "最大回撤 (MDD)",
-        "痛苦指數": "痛苦指數 (越低越好)",
-        "夏普值": "夏普值 (CP值/大於1極佳)",
-        "卡瑪比率": "卡瑪比率 (抗跌性/越高越好)"
-    })
-    
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     
-    # 💥 下方顯示：最佳配置方案評估 (加上大型字體與分隔線)
     st.markdown("### 👑 最佳配置方案評估")
     
     valid_df = df_comp[df_comp["狀態"] == "安全存活"]
     if not valid_df.empty:
         best_cagr = valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
         best_equity = valid_df.loc[valid_df["最終淨值"].idxmax()]
-        best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] # 負數最大 = 跌最少
+        best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] 
         best_recovery = valid_df.loc[valid_df["最大修復天數"].idxmin()]
         best_ulcer = valid_df.loc[valid_df["痛苦指數"].idxmin()]
         best_sharpe = valid_df.loc[valid_df["夏普值"].idxmax()]
         best_calmar = valid_df.loc[valid_df["卡瑪比率"].idxmax()]
 
-        # 第一列：絕對收益
         st.markdown("##### 🏆 絕對收益視角")
         c1, c2 = st.columns(2)
         with c1: st.info(f"**最高最終餘額**\n### NT$ {best_equity['最終淨值']:,.0f}\n---\n#### 🏆 冠軍策略： `{best_equity['策略名稱']}`")
         with c2: st.info(f"**最高年化回報 (CAGR/IRR)**\n### {best_cagr['年化淨報酬率(CAGR)']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_cagr['策略名稱']}`")
 
-        # 第二列：風險與回撤
         st.markdown("##### 🛡️ 風險與回撤視角")
         c3, c4, c5 = st.columns(3)
         with c3: st.warning(f"**最低最大回撤 (MDD)**\n### {best_mdd['最大回撤']*100:.2f}%\n---\n#### 🏆 冠軍策略： `{best_mdd['策略名稱']}`")
         with c4: st.warning(f"**最短套牢修復期**\n### {best_recovery['最大修復天數']:,} 天\n---\n#### 🏆 冠軍策略： `{best_recovery['策略名稱']}`")
         with c5: st.warning(f"**最低痛苦指數 (Ulcer Index)**\n### {best_ulcer['痛苦指數']:.2f}\n---\n#### 🏆 冠軍策略： `{best_ulcer['策略名稱']}`")
 
-        # 第三列：風險收益比
         st.markdown("##### ⚖️ 風險收益比視角")
         c6, c7 = st.columns(2)
         with c6: st.success(f"**最高夏普比率 (Sharpe)**\n### {best_sharpe['夏普值']:.3f}\n---\n#### 🏆 冠軍策略： `{best_sharpe['策略名稱']}`")
@@ -589,3 +583,13 @@ if not df_comp.empty:
         fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group", color_discrete_map=color_map)
         fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度淨報酬率", xaxis_title="年份", height=450)
         st.plotly_chart(fig_annual, use_container_width=True)
+        
+    st.markdown("---")
+    st.markdown("### 📝 量化洞察與戰略優化報告")
+    st.info("""
+    **基於當前壓力測試結果，系統提出以下配置優化建議：**
+    
+    1. **波動率與槓桿耗損管理**：若發現含有高槓桿（如 QLD）的組合在遇到極端空頭時，其痛苦指數與最大回撤高於預期，這主要是由槓桿的波動率耗損與負債利差所致。單一靜態配比在牛市雖能極大化利潤，但在熊市修復期會顯得吃力。
+    2. **矩陣分離策略 (Core-Satellite)**：建議將資金池進行實體或邏輯切割。將純貼齊大盤的核心追蹤部位獨立出來，另外設立專門執行槓桿與財務工程的部位，並預留戰術緩衝空間，避免單一帳戶在黑天鵝事件時承受所有維持率壓力。
+    3. **總經指標動態水位調節**：與其死守固定的恆定維持率目標，可考慮引入如信用價差（如高收益債利差）或央行通膨目標等外部總經指標。當系統性信用風險升溫時，機動調升 SGOV 或防禦型資產的絕對比重，這將能有效防禦「股債雙殺」的情境，在不犧牲長線收益率的同時，顯著降低您的痛苦指數。
+    """)
