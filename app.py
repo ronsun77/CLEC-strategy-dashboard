@@ -6,12 +6,13 @@ import yfinance as yf
 import numpy as np
 import datetime
 import re
+import time
 
 st.set_page_config(page_title="CLEC 質押策略績效戰情室", layout="wide")
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 
+# 1. 自動抓取市場數據函數 (💥 新增自動重試防護網)
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_base_data(ticker, asset_type):
@@ -20,7 +21,15 @@ def fetch_asset_base_data(ticker, asset_type):
         if re.match(r'^\d+[A-Z]*$', ticker) and '.TW' not in ticker and '.TWO' not in ticker:
             ticker = ticker + '.TW'
             
-        data = yf.download(ticker, start="1999-01-01", end=datetime.date.today(), progress=False)
+        data = pd.DataFrame()
+        # 遇到限流時自動重試 3 次
+        for _ in range(3):
+            temp_data = yf.download(ticker, start="1999-01-01", end=datetime.date.today(), progress=False)
+            if not temp_data.empty:
+                data = temp_data
+                break
+            time.sleep(0.5)
+            
         if data.empty:
             return None, f"找不到 {ticker} 的數據。"
         
@@ -57,7 +66,6 @@ def load_default_assets():
         ("00631L.TW", "00631L (台股正2)", "Leverage", 2.0),
         ("00670L.TW", "00670L (美股正2)", "Leverage", 2.0),
         ("SGOV", "SGOV (美股超短債)", "Defensive", 0.0),
-        ("SHY", "SHY (1-3年短債)", "Defensive", 0.0),
         ("00865B.TW", "00865B (台股短債)", "Defensive", 0.0),
         ("00859B.TW", "00859B (台股投資級債)", "Defensive", 0.0)
     ]
@@ -84,6 +92,18 @@ if 'custom_strategies' not in st.session_state: st.session_state.custom_strategi
 # ==========================================
 # 3. 智慧時間軸控制器 
 # ==========================================
+st.title("📊 CLEC 質押策略績效戰情室")
+
+# 💥 數據缺失防護網 (API 異常偵測)
+missing_assets = [name for name in ["QQQ (美股大盤)", "QLD (美股正2)", "SGOV (美股超短債)"] if name not in st.session_state.asset_library]
+if missing_assets:
+    st.error(f"🚨 **嚴重警告：核心數據抓取失敗！**\n\n系統未能從 Yahoo Finance 取得以下資產的歷史報價：`{', '.join(missing_assets)}`。這通常是 API 短暫限流或網路不穩所致。\n\n**這將導致回測績效嚴重失真（淨值歸零或 Beta 值異常）！** 請點擊下方按鈕強制重新抓取。")
+    if st.button("🔄 強制重新抓取並清除快取"):
+        st.cache_data.clear()
+        if 'asset_library' in st.session_state:
+            del st.session_state.asset_library
+        st.rerun()
+
 st.sidebar.markdown("### 歷史回測與分析引擎")
 
 active_assets = set()
@@ -169,7 +189,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (💥 全面導入安全 .get() 容錯處理)
+# 4. 核心計算引擎 (修復狀態顯示 Bug)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -232,6 +252,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     total_withdrawn = 0.0
     is_bankrupt = False
     bankruptcy_date = ""
+    bankruptcy_reason = "存活" # 💥 確保破產原因動態傳遞
     daily_interest_rate = margin_rate / 252.0
 
     for date in trading_days:
@@ -281,7 +302,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 💥 容錯升級：使用 .get(n, {}).get("type") 取代直接的 KeyError 風險
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") in ["Prototype", "Defensive"]])
         bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
         
@@ -291,10 +311,11 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         display_reg = min(current_reg_margin, 10.0)
         display_bond = min(current_bond_margin, 10.0)
         
+        # 💥 修復：準確判定是淨值歸零，還是融資斷頭
         if portfolio_equity <= 0:
-            portfolio_equity = 0; is_bankrupt = True; bankruptcy_date = date.strftime("%Y-%m-%d")
+            portfolio_equity = 0; is_bankrupt = True; bankruptcy_date = date.strftime("%Y-%m-%d"); bankruptcy_reason = "淨值歸零"
         elif current_reg_margin < 1.4 and current_debt_amount > 0: 
-            portfolio_equity = 0; is_bankrupt = True; bankruptcy_date = date.strftime("%Y-%m-%d")
+            portfolio_equity = 0; is_bankrupt = True; bankruptcy_date = date.strftime("%Y-%m-%d"); bankruptcy_reason = "觸及 140% 斷頭"
 
         equity_curve.append({"日期": date, "淨值": portfolio_equity, "負債": current_debt_amount})
         reg_margin_curve.append({"日期": date, "法規維持率": display_reg})
@@ -361,11 +382,14 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
 
     calmar = cagr / abs(real_mdd) if real_mdd != 0 else 0
     
+    # 💥 確保狀態回傳精準的破產原因
+    final_status = f"破產 ({bankruptcy_date} {bankruptcy_reason})" if is_bankrupt else "安全存活"
+    
     return {
         "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, "系統 Beta": sys_beta, 
         "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
         "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, "痛苦指數": ulcer_index,
-        "累計提領生活費": total_withdrawn, "狀態": f"破產 ({bankruptcy_date} 觸及 140% 斷頭)" if is_bankrupt else "安全存活",
+        "累計提領生活費": total_withdrawn, "狀態": final_status,
         "annuals": strategy_annuals, "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
     }
@@ -373,8 +397,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
 # ==========================================
 # 5. 主畫面：策略建構器
 # ==========================================
-st.title("📊 CLEC 質押策略績效戰情室")
-
 st.subheader("🛠 建立自訂組合戰略")
 with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", f"策略模式 {len(st.session_state.custom_strategies)+1}")
