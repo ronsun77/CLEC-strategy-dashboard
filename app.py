@@ -584,17 +584,20 @@ if not df_comp.empty:
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
         
-        fig_mult = px.bar(df_chart_multiple, x="最終淨值", y="策略名稱", color="策略名稱", orientation='h', text="最終淨值", color_discrete_map=color_map)
+        df_chart_multiple["最終淨值_str"] = df_chart_multiple["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
+        fig_mult = px.bar(df_chart_multiple, x="最終淨值", y="策略名稱", color="策略名稱", orientation='h', text="最終淨值_str", color_discrete_map=color_map)
         fig_mult.update_layout(xaxis=dict(range=[0, max_val * 1.35]), showlegend=False)
-        fig_mult.update_traces(texttemplate='NT$ %{text:,.0f}', textposition='outside', cliponaxis=False)
+        fig_mult.update_traces(textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_mult, use_container_width=True)
+        
     with col2:
         st.subheader("🛡 壓力測試：最大回撤 (MDD)")
         df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
         min_mdd = df_chart_mdd["最大回撤"].min()
-        fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="策略名稱", orientation='h', text="最大回撤", color_discrete_map=color_map)
+        df_chart_mdd["最大回撤_str"] = df_chart_mdd["最大回撤"].apply(lambda x: f"{x:.2%}")
+        fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="策略名稱", orientation='h', text="最大回撤_str", color_discrete_map=color_map)
         fig_mdd.update_layout(xaxis=dict(range=[min_mdd * 1.3, 0]), xaxis_tickformat='.0%', showlegend=False)
-        fig_mdd.update_traces(texttemplate='%{text:.2%}', textposition='outside', cliponaxis=False)
+        fig_mdd.update_traces(textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_mdd, use_container_width=True)
 
     col3, col4 = st.columns(2)
@@ -602,18 +605,21 @@ if not df_comp.empty:
         st.subheader("🎯 策略卡瑪比率 (每單位回撤帶來的利潤)")
         df_chart_calmar = df_comp.sort_values(by="卡瑪比率", ascending=True)
         max_calmar = df_chart_calmar["卡瑪比率"].max()
-        fig_calmar = px.bar(df_chart_calmar, x="卡瑪比率", y="策略名稱", color="策略名稱", orientation='h', text="卡瑪比率", color_discrete_map=color_map)
+        df_chart_calmar["卡瑪比率_str"] = df_chart_calmar["卡瑪比率"].apply(lambda x: f"{x:.3f}")
+        fig_calmar = px.bar(df_chart_calmar, x="卡瑪比率", y="策略名稱", color="策略名稱", orientation='h', text="卡瑪比率_str", color_discrete_map=color_map)
         fig_calmar.update_layout(xaxis=dict(range=[0, max_calmar * 1.25]), showlegend=False)
-        fig_calmar.update_traces(texttemplate='%{text:.3f}', textposition='outside', cliponaxis=False)
+        fig_calmar.update_traces(textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_calmar, use_container_width=True)
+        
     with col4:
         st.subheader("⏳ 最長套牢修復期 (越短越好)")
         df_chart_rec = df_comp.sort_values(by="修復天數", ascending=False)
         max_rec = df_chart_rec["修復天數"].max()
-        fig_rec = px.bar(df_chart_rec, x="修復天數", y="策略名稱", color="策略名稱", orientation='h', text="修復天數", color_discrete_map=color_map)
+        # 💥 修復：將格式化的文字存入獨立欄位，避免 Plotly Trace Mapping 錯誤
+        df_chart_rec["修復_str"] = df_chart_rec["修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
+        fig_rec = px.bar(df_chart_rec, x="修復天數", y="策略名稱", color="策略名稱", orientation='h', text="修復_str", color_discrete_map=color_map)
         fig_rec.update_layout(xaxis=dict(range=[0, max_rec * 1.35]), showlegend=False)
-        df_display_rec_text = df_chart_rec["修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
-        fig_rec.update_traces(text=df_display_rec_text, textposition='outside', cliponaxis=False)
+        fig_rec.update_traces(textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_rec, use_container_width=True)
 
     st.subheader("📈 實質金額複利成長曲線 (Log Scale)")
@@ -626,7 +632,6 @@ if not df_comp.empty:
         
     st.markdown("---")
     
-    # 💥 確保三軌防線圖擁有底部圖例 (Horizontal Legend)
     st.subheader("🚨 三軌風險防線追蹤圖 (維持率觀測)")
     col_m1, col_m2, col_m3 = st.columns(3)
     
