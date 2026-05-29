@@ -169,7 +169,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (💥 容錯升級版)
+# 4. 核心計算引擎 (💥 全面導入安全 .get() 容錯處理)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -181,21 +181,18 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     initial_debt_ratio = max(0, initial_total_weight - 100.0)
     sys_beta = 0.0
     
-    # 💥 動態尋找主時間軸 (Master Timeline)，避免 QQQ 抓取失敗時當機
     master_prices = pd.Series(dtype=float)
     if "QQQ (美股大盤)" in st.session_state.asset_library and not st.session_state.asset_library["QQQ (美股大盤)"]["prices"].empty:
         master_prices = st.session_state.asset_library["QQQ (美股大盤)"]["prices"]
     elif "SPY (標普大盤)" in st.session_state.asset_library and not st.session_state.asset_library["SPY (標普大盤)"]["prices"].empty:
         master_prices = st.session_state.asset_library["SPY (標普大盤)"]["prices"]
     else:
-        # 如果前兩者都不在，尋找第一個有效的資產價格當作日曆基準
         for name, asset in st.session_state.asset_library.items():
             if name not in ["無 (不配置)", "現金"] and not asset.get("prices", pd.Series(dtype=float)).empty:
                 master_prices = asset["prices"]
                 break
                 
     if master_prices.empty:
-        # 極端情況容錯：產生虛擬商務日曆
         trading_days = pd.date_range(start=start_date, end=end_date, freq='B')
     else:
         master_slice = master_prices.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
@@ -223,7 +220,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         
     portfolio_equity = init_capital 
     current_debt_amount = (initial_debt_ratio / 100.0) * init_capital
-    current_asset_amounts = {name: (weight/100.0) * init_capital for name, weight in weights_dict.items()}
+    current_asset_amounts = {name: (weight/100.0) * init_capital for name, weight in weights_dict.items() if name in st.session_state.asset_library}
     
     year_start_assets = {name: current_asset_amounts[name] for name in current_asset_amounts}
     prev_eoy_equity = init_capital
@@ -253,16 +250,15 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             if name in ["無 (不配置)", "現金"]:
                 ret = 0.02 / 252.0
             elif date.date() >= asset_info["inception_date"]:
-                ret = df_returns.loc[date, name]
+                ret = df_returns.loc[date, name] if name in df_returns.columns else 0.0
             else:
-                # 💥 容錯：動態尋找合適的大盤代理報酬率
                 proxy_ret = 0.0
                 if "QQQ (美股大盤)" in df_returns.columns: proxy_ret = df_returns.loc[date, "QQQ (美股大盤)"]
                 elif "SPY (標普大盤)" in df_returns.columns: proxy_ret = df_returns.loc[date, "SPY (標普大盤)"]
                 
-                if asset_info["type"] == "Defensive":
+                if asset_info.get("type") == "Defensive":
                     ret = 0.02 / 252.0
-                elif asset_info["type"] == "Leverage":
+                elif asset_info.get("type") == "Leverage":
                     ret = proxy_ret * 2.0 - (0.012 / 252.0)
                 else:
                     ret = proxy_ret
@@ -285,8 +281,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") in ["Prototype", "Defensive"]])
-        bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library[n].get("type") == "Defensive"])
+        # 💥 容錯升級：使用 .get(n, {}).get("type") 取代直接的 KeyError 風險
+        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") in ["Prototype", "Defensive"]])
+        bond_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
         
         current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         current_bond_margin = bond_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
@@ -309,21 +306,24 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             
             if rebalance_type == "CLEC":
                 for name, amount in current_asset_amounts.items():
-                    if st.session_state.asset_library[name].get("type") == "Leverage":
+                    if st.session_state.asset_library.get(name, {}).get("type") == "Leverage":
                         yr_ret = (amount / year_start_assets[name]) - 1.0 if year_start_assets[name] > 0 else 0
                         if yr_ret > 0:
                             extract = ((amount / (1+yr_ret)) * yr_ret) * 0.3
                             current_asset_amounts[name] -= extract
                             for d_name in current_asset_amounts.keys():
-                                if st.session_state.asset_library[d_name].get("type") == "Defensive": current_asset_amounts[d_name] += extract; break
+                                if st.session_state.asset_library.get(d_name, {}).get("type") == "Defensive": 
+                                    current_asset_amounts[d_name] += extract; break
                         elif yr_ret < 0:
                             for d_name in current_asset_amounts.keys():
-                                if st.session_state.asset_library[d_name].get("type") == "Defensive":
+                                if st.session_state.asset_library.get(d_name, {}).get("type") == "Defensive":
                                     rescue = current_asset_amounts[d_name] * 0.02
                                     current_asset_amounts[d_name] -= rescue; current_asset_amounts[name] += rescue; break
             elif rebalance_type == "傳統定時":
                 total_assets = sum(current_asset_amounts.values())
-                for name, weight in weights_dict.items(): current_asset_amounts[name] = total_assets * (weight/sum(weights_dict.values()))
+                for name, weight in weights_dict.items(): 
+                    if name in current_asset_amounts:
+                        current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
 
             if debt_mode == "恆定維持率 (增貸再投資)":
                 if legal_collateral > 0 and current_reg_margin > target_margin_ratio:
