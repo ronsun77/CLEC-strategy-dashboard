@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects go
+import plotly.graph_objects as go
 import yfinance as yf
 import numpy as np
 import datetime
@@ -172,7 +172,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (日線高頻 + 代理合成技術)
+# 4. 核心計算引擎 (無縫銜接代理技術)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -242,6 +242,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             elif date.date() >= asset_info["inception_date"]:
                 ret = df_returns.loc[date, name]
             else:
+                # 只有在啟用代理引擎時，這段邏輯才會被觸發
                 if asset_info["type"] == "Defensive":
                     ret = 0.02 / 252.0
                 elif asset_info["type"] == "Leverage":
