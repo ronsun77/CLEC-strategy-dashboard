@@ -461,7 +461,7 @@ if st.session_state.custom_strategies:
 st.markdown("---")
 
 # ==========================================
-# 6. 終極比較表與圖表渲染
+# 6. 終極比較表與最佳配置儀表板
 # ==========================================
 comp_data = []
 annual_chart_data = []
@@ -650,7 +650,7 @@ if not df_comp.empty:
         
     st.markdown("---")
     
-    # 💥 全新升級：真實 AI 動態網格尋優引擎 (強制 Beta=1.0)
+    # 💥 全新升級：真實 AI 動態網格尋優引擎 (強制 Beta=1.0，並展示亞軍實力)
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
     if not valid_df.empty:
@@ -660,17 +660,16 @@ if not df_comp.empty:
         if has_qqq_baseline:
             qqq_stats = qqq_baseline.iloc[0]
             
-            with st.spinner("⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，嚴格鎖定 Beta=1.0 尋找超越 QQQ 的黃金比例..."):
+            with st.spinner("⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，嚴格鎖定 Beta=1.0 尋找最優質押黃金比例..."):
                 
                 ai_results = []
                 # 💥 迴圈掃描：保證 W_QQQ + 2*W_QLD = 100 (對標 Beta 恆定為 1.0)
-                for w_qld in [10.0, 20.0, 30.0, 40.0, 45.0, 50.0]:
+                for w_qld in [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0]:
                     w_qqq = 100.0 - 2 * w_qld
-                    for w_sgov in [10.0, 20.0, 30.0, 40.0, 50.0]:
+                    for w_sgov in [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]:
                         debt = (w_qqq + w_qld + w_sgov) - 100.0
-                        if debt <= 0: continue # 只測試帶有槓桿的矩陣
+                        if debt <= 0: continue 
                         
-                        # 動態計算合理目標維持率
                         target_m = (w_qqq + w_sgov) / debt
                         
                         config = {
@@ -700,20 +699,20 @@ if not df_comp.empty:
                     if ai_best_sharpe["夏普值"] > qqq_stats["夏普值"]:
                         st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n相比純抱 QQQ (夏普值 {qqq_stats['夏普值']:.3f})，系統找到以下最佳平衡點：\n\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：成功將夏普值推升至 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)，完美利用現金水庫吸收了槓桿的波動。")
                     else:
-                        st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n系統算盡所有 Beta=1.0 的組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 已是此區間內最高 CP 值的存在，任何加入槓桿與負債的組合都會拖累風險收益比。")
+                        st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n系統算盡所有 Beta=1.0 的組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 仍是此區間內最高 CP 值的存在。但若您必須維持質押與提領架構，以下是系統為您找出的**亞軍配比 (Top Alternative)**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：夏普值達 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)，在帶有負債的質押架構下已屬頂尖平衡表現。")
 
                     # 判斷 2: 最大回撤優化
                     ai_best_mdd = df_ai_valid.loc[df_ai_valid["最大回撤"].idxmax()]
                     if ai_best_mdd["最大回撤"] > qqq_stats["最大回撤"]:
                         st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n若您覺得純 QQQ 的跌幅 ({qqq_stats['最大回撤']*100:.2f}%) 太高，系統為您找到以下最佳鐵壁防禦：\n\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：透過放大短債並縮減正2耗損，成功將極限回撤壓低至 **{ai_best_mdd['最大回撤']*100:.2f}%**，讓您的痛苦指數從 {qqq_stats['痛苦指數']:.2f} 降至極低的 **{ai_best_mdd['痛苦指數']:.2f}**。")
                     else:
-                        st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n在此區間內，任何 Beta=1.0 的槓桿策略都無法提供比 `純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 更強的防禦力。若要追求更低回撤，您必須調降整體的對標 Beta。")
+                        st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n在此區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。但若您希望在維持 Beta=1.0 的槓桿架構下盡可能抗跌，以下是系統找出的**最強防禦亞軍**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})，是所有帶有負債的組合中最抗震的選擇。")
 
                     # 判斷 3: 最終淨值優化
                     ai_best_equity = df_ai_valid.loc[df_ai_valid["最終淨值"].idxmax()]
                     if ai_best_equity["最終淨值"] > qqq_stats["最終淨值"]:
                         st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n在不增加系統風險 (Beta=1.0) 的前提下，系統發現透過「恆定維持率」的財務工程，能創造更高的絕對獲利：\n\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：將最終淨值推升至 **NT$ {ai_best_equity['最終淨值']:,.0f}** (勝過 QQQ 的 NT$ {qqq_stats['最終淨值']:,.0f})，成功榨出比大盤更驚人的長線複利！")
                     else:
-                        st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n系統推演後確認，`純抱 QQQ` 就是這段時間內的印鈔機 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})，任何更高槓桿的嘗試都會遭遇嚴重的耗損反噬。")
+                        st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。但若您想嘗試利用質押架構逼近極限，以下是**獲利亞軍配比**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)，是所有槓桿質押組合中爆發力最強的設定。")
         else:
             st.info("⚠️ 若要啟用 AI 網格尋優對比，請確保 `純抱 QQQ` 策略在您的回測區間內處於安全存活狀態。")
