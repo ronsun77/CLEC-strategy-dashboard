@@ -11,7 +11,7 @@ st.set_page_config(page_title="頂級 CLEC 質押策略回測平台", layout="wi
 RISK_FREE_RATE = 0.04
 
 # ==========================================
-# 1. 自動抓取市場數據函數 (下載完整區間)
+# 1. 自動抓取市場數據函數 
 # ==========================================
 @st.cache_data(ttl=86400)
 def fetch_asset_base_data(ticker, asset_type):
@@ -40,7 +40,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (納入 812 常駐)
+# 2. 初始化預設資產與策略
 # ==========================================
 def load_default_assets():
     lib = {
@@ -57,7 +57,6 @@ def load_default_assets():
         ("00631L.TW", "00631L (台股正2)", "Leverage", 2.0),
         ("00670L.TW", "00670L (美股正2)", "Leverage", 2.0),
         ("SGOV", "SGOV (美股超短債)", "Defensive", 0.0),
-        ("SHY", "SHY (1-3年短債)", "Defensive", 0.0),
         ("00865B.TW", "00865B (台股短債)", "Defensive", 0.0),
         ("00859B.TW", "00859B (台股投資級債)", "Defensive", 0.0)
     ]
@@ -65,14 +64,12 @@ def load_default_assets():
         data, _ = fetch_asset_base_data(ticker, a_type)
         if data:
             data["beta"] = beta
-            st.session_state.asset_library = st.session_state.get('asset_library', {})
             lib[display_name] = data
     return lib
 
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
-# 💥 核心強制重寫：將 812 策略永久納入內建固定比較表
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
@@ -84,7 +81,7 @@ st.session_state.benchmark_strategies = {
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
 
 # ==========================================
-# 3. 智慧時間軸控制器 (解鎖日曆綁架)
+# 3. 智慧時間軸控制器 
 # ==========================================
 st.sidebar.markdown("### 歷史回測與分析引擎")
 
@@ -123,7 +120,7 @@ min_allowed_date = min_historical_limit if enable_synthetic else max_inception_d
 
 if start_date < min_allowed_date:
     if not enable_synthetic:
-        st.sidebar.error(f"⚠️ **未啟用合成引擎**\n\n您選擇了 {start_date}，但目前配置中部位的最晚掛牌日為 {max_inception_date}。\n\n👉 **請勾選上方「🚀 啟用智能合成代理引擎」** 進行歷史數據回填，即可自由解鎖往前的年份（如 2008 年金融海嘯）！")
+        st.sidebar.error(f"⚠️ **未啟用合成引擎**\n\n您選擇了 {start_date}，但目前配置中部位的最晚掛牌日為 {max_inception_date}。\n\n👉 **請勾選上方「🚀 啟用智能合成代理引擎」** 進行歷史數據回填，即可自由解鎖往前的年份！")
     else:
         st.sidebar.error(f"⚠️ 系統日線數據最早僅支援至 1999 年 1 月 4 日。")
     st.stop()
@@ -171,7 +168,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (逐日計息，年度再平衡與增貸)
+# 4. 核心計算引擎 (加入痛苦指數運算)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -231,8 +228,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             if date in eoy_dates: strategy_annuals[date.year] = -1.0
             continue
             
-        row = df_returns.loc[date]
-        
         for name, amount in current_asset_amounts.items():
             if name not in st.session_state.asset_library or amount <= 0:
                 continue
@@ -288,7 +283,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         reg_margin_curve.append({"日期": date, "法規維持率": display_reg})
         bond_margin_curve.append({"日期": date, "純債維持率": display_bond})
             
-        # 💥 只有到了一年一度的年底交易日，才會觸發 CLEC 再平衡與維持率增貸
         if date in eoy_dates and not is_bankrupt:
             strategy_annuals[date.year] = (portfolio_equity / prev_eoy_equity) - 1.0 if prev_eoy_equity > 0 else 0
             prev_eoy_equity = portfolio_equity
@@ -336,15 +330,22 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         is_underwater = df_curve["水下回撤"] < 0
         drop_groups = (~is_underwater).cumsum()[is_underwater]
         max_recovery_days = int(drop_groups.value_counts().max() * (365.25 / 252)) if not drop_groups.empty else 0
+        
+        # 💥 新增：痛苦指數 (Ulcer Index) 計算
+        if is_underwater.any():
+            drawdowns_pct = df_curve["水下回撤"] * 100
+            ulcer_index = np.sqrt(np.mean(drawdowns_pct ** 2))
+        else:
+            ulcer_index = 0.0
     else:
-        real_mdd = -1.0; real_vol = 0.0; sharpe = 0; max_recovery_days = 9999
+        real_mdd = -1.0; real_vol = 0.0; sharpe = 0; max_recovery_days = 9999; ulcer_index = 99.9
 
     calmar = cagr / abs(real_mdd) if real_mdd != 0 else 0
     
     return {
         "總權重": initial_total_weight, "負債模式": debt_mode, "再平衡": rebalance_type, "系統 Beta": sys_beta, 
         "年化淨報酬率(CAGR)": cagr, "最終淨值": portfolio_equity, "年化波動率": real_vol,
-        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, 
+        "最大回撤": real_mdd, "夏普值": sharpe, "卡瑪比率": calmar, "最大修復天數": max_recovery_days, "痛苦指數": ulcer_index,
         "累計提領生活費": total_withdrawn, "狀態": f"破產 ({bankruptcy_date} 觸及 140% 斷頭)" if is_bankrupt else "安全存活",
         "annuals": strategy_annuals, "curve": equity_curve, "reg_margin_curve": reg_margin_curve, "bond_margin_curve": bond_margin_curve, "有效年數": num_years,
         "類型": "純大盤對照" if len([w for w in weights_dict.values() if w > 0]) == 1 else ("自訂戰略" if "🎯" in strategy_config.get("name", "") else "經典對照")
@@ -404,10 +405,8 @@ if st.session_state.custom_strategies:
 st.markdown("---")
 
 # ==========================================
-# 6. 終極比較表與多維風險圖表
+# 6. 終極比較表與最佳配置儀表板
 # ==========================================
-st.subheader("🏆 戰略終極比較表")
-
 comp_data = []
 annual_chart_data = []
 curve_chart_data = []
@@ -431,9 +430,47 @@ with st.spinner("⏳ 核心引擎運作中..."):
 df_comp = pd.DataFrame(comp_data)
 
 if not df_comp.empty:
+    
+    # 💥 新增：最佳配置方案評估面板 (KPI 儀表板)
+    st.markdown("### 👑 最佳配置方案評估")
+    
+    valid_df = df_comp[df_comp["狀態"] == "安全存活"]
+    if not valid_df.empty:
+        best_cagr = valid_df.loc[valid_df["年化淨報酬率(CAGR)"].idxmax()]
+        best_equity = valid_df.loc[valid_df["最終淨值"].idxmax()]
+        best_mdd = valid_df.loc[valid_df["最大回撤"].idxmax()] # 負數中最大的最接近 0，即跌幅最小
+        best_recovery = valid_df.loc[valid_df["最大修復天數"].idxmin()]
+        best_ulcer = valid_df.loc[valid_df["痛苦指數"].idxmin()]
+        best_sharpe = valid_df.loc[valid_df["夏普值"].idxmax()]
+        best_calmar = valid_df.loc[valid_df["卡瑪比率"].idxmax()]
+
+        # 第一列：絕對收益
+        st.markdown("##### 🏆 絕對收益視角")
+        c1, c2 = st.columns(2)
+        with c1: st.info(f"**最高最終餘額**\n\n### NT$ {best_equity['最終淨值']:,.0f}\n\n🏆 冠軍策略：`{best_equity['策略名稱']}`")
+        with c2: st.info(f"**最高年化回報 (CAGR)**\n\n### {best_cagr['年化淨報酬率(CAGR)']*100:.2f}%\n\n🏆 冠軍策略：`{best_cagr['策略名稱']}`")
+
+        # 第二列：風險與回撤
+        st.markdown("##### 🛡️ 風險與回撤視角")
+        c3, c4, c5 = st.columns(3)
+        with c3: st.warning(f"**最低最大回撤 (MDD)**\n\n### {best_mdd['最大回撤']*100:.2f}%\n\n🏆 冠軍策略：`{best_mdd['策略名稱']}`")
+        with c4: st.warning(f"**最短套牢修復期**\n\n### {best_recovery['最大修復天數']:,} 天\n\n🏆 冠軍策略：`{best_recovery['策略名稱']}`")
+        with c5: st.warning(f"**最低痛苦指數 (Ulcer Index)**\n\n### {best_ulcer['痛苦指數']:.2f}\n\n🏆 冠軍策略：`{best_ulcer['策略名稱']}`")
+
+        # 第三列：風險收益比
+        st.markdown("##### ⚖️ 風險收益比視角")
+        c6, c7 = st.columns(2)
+        with c6: st.success(f"**最高夏普比率**\n\n### {best_sharpe['夏普值']:.3f}\n\n🏆 冠軍策略：`{best_sharpe['策略名稱']}`")
+        with c7: st.success(f"**最高卡瑪比率 (收益/風險)**\n\n### {best_calmar['卡瑪比率']:.3f}\n\n🏆 冠軍策略：`{best_calmar['策略名稱']}`")
+    else:
+        st.error("⚠️ 壓力測試失敗：在您設定的條件下，所有策略均已宣告破產，無法產生最佳方案評估。")
+
+    st.markdown("---")
+    st.subheader("📊 績效比較表")
+    
     cols_order = [
         "策略名稱", "負債模式", "再平衡", "狀態", 
-        "系統 Beta", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", 
+        "系統 Beta", "年化淨報酬率(CAGR)", "年化波動率", "最大回撤", "痛苦指數", 
         "夏普值", "卡瑪比率", "最大修復天數", "最終淨值", "累計提領生活費"
     ]
     df_display = df_comp[cols_order].copy()
@@ -442,6 +479,7 @@ if not df_comp.empty:
     df_display["年化淨報酬率(CAGR)"] = df_display["年化淨報酬率(CAGR)"].apply(lambda x: f"{x*100:.2f}%")
     df_display["年化波動率"] = df_display["年化波動率"].apply(lambda x: f"{x*100:.2f}%")
     df_display["最大回撤"] = df_display["最大回撤"].apply(lambda x: f"{x*100:.2f}%")
+    df_display["痛苦指數"] = df_display["痛苦指數"].apply(lambda x: f"{x:.2f}")
     df_display["夏普值"] = df_display["夏普值"].apply(lambda x: f"{x:.3f}")
     df_display["卡瑪比率"] = df_display["卡瑪比率"].apply(lambda x: f"{x:.3f}")
     df_display["最大修復天數"] = df_display["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
@@ -458,17 +496,16 @@ if not df_comp.empty:
         max_val = df_chart_multiple["最終淨值"].max()
         fig_mult = px.bar(df_chart_multiple, x="最終淨值", y="策略名稱", color="類型", orientation='h', text="最終淨值",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_mult.update_layout(xaxis=dict(range=[0, max_val * 1.35])) # 💥 再向右拓寬
+        fig_mult.update_layout(xaxis=dict(range=[0, max_val * 1.35]))
         fig_mult.update_traces(texttemplate='NT$ %{text:,.0f}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_mult, use_container_width=True)
-        
     with col2:
         st.subheader("🛡 壓力測試：最大回撤 (MDD)")
         df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
         min_mdd = df_chart_mdd["最大回撤"].min()
         fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="類型", orientation='h', text="最大回撤",
             color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_mdd.update_layout(xaxis=dict(range=[min_mdd * 1.3, 0]), xaxis_tickformat='.0%') # 💥 再向左拓寬
+        fig_mdd.update_layout(xaxis=dict(range=[min_mdd * 1.3, 0]), xaxis_tickformat='.0%')
         fig_mdd.update_traces(texttemplate='%{text:.2%}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_mdd, use_container_width=True)
 
@@ -482,7 +519,6 @@ if not df_comp.empty:
         fig_calmar.update_layout(xaxis=dict(range=[0, max_calmar * 1.25]))
         fig_calmar.update_traces(texttemplate='%{text:.3f}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_calmar, use_container_width=True)
-        
     with col4:
         st.subheader("⏳ 最長套牢修復期 (越短越好)")
         df_chart_rec = df_comp.sort_values(by="最大修復天數", ascending=False)
@@ -535,7 +571,7 @@ if not df_comp.empty:
             "純抱 QQQ": "#7f7f7f", 
             "經典 CLEC 433 (買借死)": "#1f77b4", 
             "穩健 623 (恆定增貸)": "#ff7f0e",
-            "防禦 812 (恆定增貸)": "#2ca02c" # 💥 同步加上 812 專屬色系
+            "防禦 812 (恆定增貸)": "#2ca02c"
         }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
