@@ -206,7 +206,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 (💥 導入進階彈性再平衡機制)
+# 4. 核心計算引擎 (💥 加入自動防禦機制)
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -259,11 +259,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     current_debt_amount = (initial_debt_ratio / 100.0) * init_capital
     current_asset_amounts = {name: (weight/100.0) * init_capital for name, weight in weights_dict.items() if name in st.session_state.asset_library}
     
-    # 用於一般年度 CLEC 的起點紀錄
     year_start_assets = {name: current_asset_amounts[name] for name in current_asset_amounts}
     prev_eoy_equity = init_capital
     
-    # 💥 用於「彈性再平衡」的水位紀錄 (Watermark)
     last_rebal_equity = init_capital
     last_rebal_assets = current_asset_amounts.copy()
     
@@ -287,6 +285,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             if date in eoy_dates: strategy_annuals[date.year] = -1.0
             continue
             
+        # 1. 每日市場漲跌結算
         for name, amount in current_asset_amounts.items():
             if name not in st.session_state.asset_library or amount <= 0:
                 continue
@@ -310,6 +309,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     
             current_asset_amounts[name] = amount * (1 + ret)
                 
+        # 2. 利息與提領結算
         interest_cost = current_debt_amount * daily_interest_rate
         current_debt_amount += interest_cost
         
@@ -326,11 +326,29 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        prototype_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
-        defensive_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
-        total_collateral = prototype_collateral + defensive_collateral
+        # 💥 3. 自動防禦機制 (Auto-Margin Defense)
+        # 只要維持率跌破 160%，主動賣出防守短債來償還借貸，保護維持率不被斷頭
+        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         
-        legal_collateral = prototype_collateral
+        if current_debt_amount > 0:
+            current_reg_margin = legal_collateral / current_debt_amount
+            if current_reg_margin < 1.60:
+                # 計算要將維持率拉回 1.6 所需的目標負債
+                target_debt = legal_collateral / 1.60
+                shortfall = current_debt_amount - target_debt
+                if shortfall > 0:
+                    for d_name in current_asset_amounts.keys():
+                        if st.session_state.asset_library.get(d_name, {}).get("type") == "Defensive" and current_asset_amounts[d_name] > 0:
+                            repay = min(shortfall, current_asset_amounts[d_name])
+                            current_asset_amounts[d_name] -= repay
+                            current_debt_amount -= repay
+                            shortfall -= repay
+                            if shortfall <= 0: break
+
+        # 4. 更新最新狀態並記錄
+        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
+        defensive_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
+        total_collateral = legal_collateral + defensive_collateral
         
         current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         current_total_margin = total_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
@@ -346,11 +364,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         total_margin_curve.append({"日期": date, "總擔保維持率": min(current_total_margin, 10.0)})
         bond_margin_curve.append({"日期": date, "純債維持率": min(current_bond_margin, 10.0)})
         
-        # 💥 實裝：彈性再平衡 (防守型 / 進取型) 每日連續監測
+        # 5. 彈性再平衡觸發檢查
         if not is_bankrupt and rebalance_type in ["CLEC彈性(防守)", "CLEC彈性(進取)"]:
             is_defensive = (rebalance_type == "CLEC彈性(防守)")
-            
-            # 設定閥值
             threshold_up = 1.15 if is_defensive else 1.25
             threshold_down = 0.90 if is_defensive else 0.82
             extract_pct = 0.45 if is_defensive else 0.30
@@ -358,7 +374,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             
             trigger_rebal = False
             
-            # 條件 1：上漲觸發提早鎖利
             if portfolio_equity >= last_rebal_equity * threshold_up:
                 for name, amount in current_asset_amounts.items():
                     if st.session_state.asset_library.get(name, {}).get("type") == "Leverage":
@@ -366,21 +381,18 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                         if profit > 0:
                             extract = profit * extract_pct
                             current_asset_amounts[name] -= extract
-                            # 將利潤轉入防守水庫
                             for d_name in current_asset_amounts.keys():
                                 if st.session_state.asset_library.get(d_name, {}).get("type") == "Defensive":
                                     current_asset_amounts[d_name] += extract
                                     break
                 trigger_rebal = True
                 
-            # 條件 2：下跌觸發危機加碼
             elif portfolio_equity <= last_rebal_equity * threshold_down:
                 total_assets_current = sum(current_asset_amounts.values())
                 for d_name in current_asset_amounts.keys():
                     if st.session_state.asset_library.get(d_name, {}).get("type") == "Defensive":
                         rescue = min(current_asset_amounts[d_name], total_assets_current * rescue_pct)
                         current_asset_amounts[d_name] -= rescue
-                        # 將資金加碼至槓桿部位
                         for l_name in current_asset_amounts.keys():
                             if st.session_state.asset_library.get(l_name, {}).get("type") == "Leverage":
                                 current_asset_amounts[l_name] += rescue
@@ -392,7 +404,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 last_rebal_equity = portfolio_equity
                 last_rebal_assets = current_asset_amounts.copy()
             
-        # 傳統年底再平衡邏輯
+        # 6. 年底常規再平衡
         if date in eoy_dates and not is_bankrupt:
             strategy_annuals[date.year] = (portfolio_equity / prev_eoy_equity) - 1.0 if prev_eoy_equity > 0 else 0
             prev_eoy_equity = portfolio_equity
@@ -475,7 +487,6 @@ with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", f"策略模式 {len(st.session_state.custom_strategies)+1}")
     
     col_r, col_d, col_m = st.columns(3)
-    # 💥 加入全新的彈性再平衡選項
     with col_r: rebal_mode = st.selectbox("再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "不執行"], index=0)
     with col_d: debt_mode = st.selectbox("負債運用模組", ["買借死 (提領生活費)", "恆定維持率 (增貸再投資)", "無"], index=0)
     with col_m: target_margin_input = st.number_input("目標維持率 (%)", min_value=140, max_value=2000, value=600, step=50)
@@ -550,13 +561,20 @@ if not df_comp.empty:
     
     st.markdown("### 📊 績效比較表")
     
-    with st.expander("📖 點擊查看量化指標白話文說明"):
+    with st.expander("📖 點擊查看【再平衡心法】與【量化指標】白話文說明", expanded=False):
         st.markdown("""
-        * **彈性再平衡**：依據 James 老師策略，利用連續監控水位(Watermark)進行不定期再平衡。防守型提早獲利了結並減少低檔加碼；進取型讓利潤奔跑並加大低檔抄底力道。
-        * **夏普值 (Sharpe Ratio)**：每承受 1 單位波動風險，能換取多少超額報酬。越高越好。
-        * **卡瑪比率 (Calmar Ratio)**：年化報酬率除以最大回撤的絕對值。衡量遇到股災時的 CP 值。
-        * **痛苦指數 (Ulcer Index)**：不只看跌多深，還看你在水下「憋氣套牢了多久」。數值越低越好。
-        * **CAGR**：年化複合成長率。在本系統包含現金流（提領生活費）的模型中，此數據即等同於投資人的實質 IRR（內部報酬率）。
+        #### 🔄 再平衡模式說明
+        * **不執行**：買入後死抱到底，不調整任何比例。
+        * **傳統定時**：每年底固定強制將部位調回你設定的初始權重。
+        * **CLEC (年度常規)**：每年底檢視。若槓桿部位賺錢，抽取 30% 獲利轉入短債；若虧損，從短債水庫抽取 2% 資金救援槓桿。
+        * **CLEC 彈性 (防守型)**：不限年底，每日監控。總資產上漲 15% 就提早「獲利了結 (抽45%)」；下跌 10% 啟動輕度救援。適合重視安全墊的保守派。
+        * **CLEC 彈性 (進取型)**：不限年底，每日監控。總資產上漲 25% 才「讓利潤奔跑完再收 (抽30%)」；大跌 18% 才啟動深度抄底。適合追求高報酬的積極派。
+
+        #### 📈 核心量化指標
+        * **夏普值 (Sharpe Ratio)**：每承受 1 單位波動風險，能換取多少超額報酬。越大代表「漲得越穩」。
+        * **卡瑪比率 (Calmar Ratio)**：年化報酬率 ÷ 最大回撤。衡量「每忍受 1% 跌幅，每年能賺回多少利潤」，抗跌且能漲的策略數值最高。
+        * **痛苦指數 (Ulcer Index)**：不只看跌多深，還看你在水下「憋氣套牢了多久」。數值越低越好，越低代表晚上睡得越安穩。
+        * **CAGR (年化報酬率)**：在本系統包含現金流（提領生活費）的模型中，此數據即等同於投資人的實質 IRR（內部報酬率）。
         * **初始借貸率**：總資產配比超過 100% 的部分。
         """)
     
@@ -732,6 +750,7 @@ if not df_comp.empty:
         
     st.markdown("---")
     
+    # 💥 徹底移除底色的清爽版 AI 報告
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
     if not valid_df.empty:
@@ -744,7 +763,6 @@ if not df_comp.empty:
             with st.spinner("⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，納入「彈性再平衡」參數尋找最優黃金比例..."):
                 
                 ai_results = []
-                # 💥 將三種再平衡模式全面加入 AI 網格搜尋中
                 for rebal_ai in ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)"]:
                     for w_qld in [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0]:
                         w_qqq = 100.0 - 2 * w_qld
@@ -768,33 +786,40 @@ if not df_comp.empty:
                             ai_results.append(res)
                         
                 df_ai = pd.DataFrame(ai_results)
-                
                 df_ai_valid = df_ai[(df_ai["狀態"] == "安全存活") & (df_ai["最大回撤"] > -0.95)]
                 
                 def format_ai_wts(row):
                     wts_str = " + ".join([f"{k.split(' ')[0]} {v}%" for k, v in row["wts_config"].items() if v > 0])
                     return f"**`{wts_str}`** (再平衡模式: {row['rebal_config']} ｜ 恆定維持率 {int(row['target_margin_pct'])}%)"
 
-                st.info(f"系統已根據您選擇的 `{start_date} ~ {end_date}` 區間進行了數百次的背景網格運算 (包含最新的防守與進取彈性控盤)。在**「保證回測期間內絕對存活」**且**「嚴格鎖定對標 Beta = 1.0」** 的前提下，為您找出以下能超越『純抱 QQQ』的實戰黃金比例：")
+                st.info(f"系統已根據您選擇的 `{start_date} ~ {end_date}` 區間進行了數百次的背景網格運算 (包含最新的防守與進取彈性控盤)。在**「保證回測期間內絕對存活」**且**「嚴格鎖定對標 Beta = 1.0」** 的雙重前提下，為您找出以下能超越『純抱 QQQ』的實戰黃金比例：")
 
                 if not df_ai_valid.empty:
+                    # 目標 1
                     ai_best_sharpe = df_ai_valid.loc[df_ai_valid["夏普值"].idxmax()]
+                    st.markdown("""<div style="background-color: rgba(74, 222, 128, 0.2); padding: 8px 15px; border-radius: 5px; color: #4ade80; font-weight: bold; margin-bottom: 10px;">💡 目標：更高的 CP 值 (漲得穩)</div>""", unsafe_allow_html=True)
                     if ai_best_sharpe["夏普值"] > qqq_stats["夏普值"]:
-                        st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n相比純抱 QQQ (夏普值 {qqq_stats['夏普值']:.3f})，系統找到以下最佳平衡點：\n\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：成功將夏普值推升至 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)，完美利用彈性控盤與短債吸收了槓桿的波動。")
+                        st.markdown(f"相比純抱 QQQ (夏普值 {qqq_stats['夏普值']:.3f})，系統找到以下最佳平衡點：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：成功將夏普值推升至 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)，完美利用彈性控盤與短債吸收了槓桿的波動。")
                     else:
-                        st.success(f"💡 **目標：更高的 CP 值 (漲得穩)**\n\n系統算盡所有 Beta=1.0 的組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 仍是此區間內最高 CP 值的存在。但若您必須維持質押與提領架構，以下是系統為您找出的**亞軍配比 (Top Alternative)**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：夏普值達 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)，在帶有負債的架構下已屬頂尖表現。")
+                        st.markdown(f"系統算盡所有 Beta=1.0 的組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 仍是此區間內最高 CP 值的存在。但若您必須維持質押與提領架構，以下是系統為您找出的**亞軍配比 (Top Alternative)**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：夏普值達 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)，在帶有負債的架構下已屬頂尖表現。")
+                    st.markdown("<br>", unsafe_allow_html=True)
 
+                    # 目標 2
                     ai_best_mdd = df_ai_valid.loc[df_ai_valid["最大回撤"].idxmax()]
+                    st.markdown("""<div style="background-color: rgba(250, 204, 21, 0.2); padding: 8px 15px; border-radius: 5px; color: #facc15; font-weight: bold; margin-bottom: 10px;">🛡️ 目標：更低的最大回撤 (睡得安穩)</div>""", unsafe_allow_html=True)
                     if ai_best_mdd["最大回撤"] > qqq_stats["最大回撤"]:
-                        st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n若您覺得純 QQQ 的跌幅 ({qqq_stats['最大回撤']*100:.2f}%) 太高，系統為您找到以下最佳鐵壁防禦：\n\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：透過放大短債並縮減正2耗損，成功將極限回撤壓低至 **{ai_best_mdd['最大回撤']*100:.2f}%**，讓您的痛苦指數從 {qqq_stats['痛苦指數']:.2f} 降至極低的 **{ai_best_mdd['痛苦指數']:.2f}**。")
+                        st.markdown(f"若您覺得純 QQQ 的跌幅 ({qqq_stats['最大回撤']*100:.2f}%) 太高，系統為您找到以下最佳鐵壁防禦：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：透過放大短債並縮減正2耗損，成功將極限回撤壓低至 **{ai_best_mdd['最大回撤']*100:.2f}%**，讓您的痛苦指數從 {qqq_stats['痛苦指數']:.2f} 降至極低的 **{ai_best_mdd['痛苦指數']:.2f}**。")
                     else:
-                        st.warning(f"🛡️ **目標：更低的最大回撤 (睡得安穩)**\n\n在此區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。但若您希望在維持 Beta=1.0 的槓桿架構下盡可能抗跌，以下是系統找出的**最強防禦亞軍**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})，是所有帶有負債的組合中最抗震的絕對安全選擇。")
+                        st.markdown(f"在此區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。但若您希望在維持 Beta=1.0 的槓桿架構下盡可能抗跌，以下是系統找出的**最強防禦亞軍**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})，是所有帶有負債的組合中最抗震的絕對安全選擇。")
+                    st.markdown("<br>", unsafe_allow_html=True)
 
+                    # 目標 3
                     ai_best_equity = df_ai_valid.loc[df_ai_valid["最終淨值"].idxmax()]
+                    st.markdown("""<div style="background-color: rgba(248, 113, 113, 0.2); padding: 8px 15px; border-radius: 5px; color: #f87171; font-weight: bold; margin-bottom: 10px;">🔥 目標：極致的最終淨值 (賺得比 QQQ 更多)</div>""", unsafe_allow_html=True)
                     if ai_best_equity["最終淨值"] > qqq_stats["最終淨值"]:
-                        st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n在不增加系統風險 (Beta=1.0) 的前提下，系統發現透過「彈性再平衡」的動態控盤，能創造更高的絕對獲利：\n\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：將最終淨值推升至 **NT$ {ai_best_equity['最終淨值']:,.0f}** (勝過 QQQ 的 NT$ {qqq_stats['最終淨值']:,.0f})，成功榨出比大盤更驚人的長線複利！")
+                        st.markdown(f"在不增加系統風險 (Beta=1.0) 的前提下，系統發現透過「彈性再平衡」的動態控盤，能創造更高的絕對獲利：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：將最終淨值推升至 **NT$ {ai_best_equity['最終淨值']:,.0f}** (勝過 QQQ 的 NT$ {qqq_stats['最終淨值']:,.0f})，成功榨出比大盤更驚人的長線複利！")
                     else:
-                        st.error(f"🔥 **目標：極致的最終淨值 (賺得比 QQQ 更多)**\n\n系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。但若您想嘗試利用質押架構逼近極限，以下是**獲利亞軍配比**：\n\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)，是所有「保證不破產」的槓桿組合中爆發力最強的設定。")
+                        st.markdown(f"系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。但若您想嘗試利用質押架構逼近極限，以下是**獲利亞軍配比**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)，是所有「保證不破產」的槓桿組合中爆發力最強的設定。")
                 else:
                     st.error("⚠️ 系統在進行背景網格尋優時，發現在此區間內所有帶有負債的 Beta=1.0 策略均無法安全存活。建議降低提領比例或減少槓桿運用。")
         else:
