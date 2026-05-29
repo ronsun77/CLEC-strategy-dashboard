@@ -56,7 +56,6 @@ def load_default_assets():
         "現金": {"prices": pd.Series(dtype=float), "inception_date": datetime.date(1990, 1, 1), "beta": 0.0, "type": "Defensive"}
     }
     
-    # 1. 優先獨立抓取 QQQ 作為全系統 Beta 的絕對基準 (基準值恆定為 1.0)
     qqq_data, _ = fetch_asset_base_data("QQQ", "Prototype")
     if qqq_data:
         qqq_data["beta"] = 1.0
@@ -78,7 +77,6 @@ def load_default_assets():
         ("00859B.TW", "00859B (台股投資級債)", "Defensive")
     ]
     
-    # 2. 逐一抓取其他資產，並以真實歷史共變異數動態計算對標 QQQ 的 Beta
     for ticker, display_name, a_type in defaults:
         data, _ = fetch_asset_base_data(ticker, a_type)
         if data:
@@ -100,12 +98,13 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
+# 💥 更新策略名稱，將維持率目標直接寫入名稱中
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
-    "穩健 623 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
-    "防禦 812 (恆定增貸)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 10.0}
+    "穩健 623 (恆定維持率 600%)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
+    "防禦 812 (恆定維持率 1000%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 10.0}
 }
 
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
@@ -516,9 +515,17 @@ if not df_comp.empty:
     df_display["最終淨值"] = df_display["最終淨值"].apply(lambda x: f"NT$ {x:,.0f}")
     df_display["累計提領生活費"] = df_display["累計提領生活費"].apply(lambda x: f"NT$ {x:,.0f}")
     
+    # 💥 全面啟用換行排版，消滅水平卷軸
     df_display = df_display.rename(columns={
-        "年化淨報酬率(CAGR)": "年化淨報酬率 (CAGR/IRR)",
-        "最大回撤": "最大回撤 (MDD)"
+        "真實 Beta (對標 QQQ)": "真實 Beta\n(對標 QQQ)",
+        "年化淨報酬率(CAGR)": "年化淨報酬\n(CAGR/IRR)",
+        "年化波動率": "年化\n波動率",
+        "最大回撤": "最大回撤\n(MDD)",
+        "痛苦指數": "痛苦\n指數",
+        "夏普值": "夏普值\n(Sharpe)",
+        "卡瑪比率": "卡瑪比率\n(Calmar)",
+        "最大修復天數": "最大修復\n(天)",
+        "累計提領生活費": "累計提領\n生活費"
     })
     
     st.dataframe(df_display, use_container_width=True, hide_index=True)
@@ -561,18 +568,27 @@ if not df_comp.empty:
         st.subheader("💰 最終資產淨值排行 (NT$)")
         df_chart_multiple = df_comp.sort_values(by="最終淨值", ascending=True)
         max_val = df_chart_multiple["最終淨值"].max()
-        fig_mult = px.bar(df_chart_multiple, x="最終淨值", y="策略名稱", color="類型", orientation='h', text="最終淨值",
-            color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_mult.update_layout(xaxis=dict(range=[0, max_val * 1.35]))
+        # 💥 更新顏色對應表，適應新名稱
+        color_map = {
+            "純抱 SPY": "#c7c7c7", 
+            "純抱 QQQ": "#7f7f7f", 
+            "經典 CLEC 433 (買借死)": "#1f77b4", 
+            "穩健 623 (恆定維持率 600%)": "#ff7f0e",
+            "防禦 812 (恆定維持率 1000%)": "#2ca02c"
+        }
+        custom_colors = px.colors.sequential.Reds[3:] 
+        for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
+        
+        fig_mult = px.bar(df_chart_multiple, x="最終淨值", y="策略名稱", color="策略名稱", orientation='h', text="最終淨值", color_discrete_map=color_map)
+        fig_mult.update_layout(xaxis=dict(range=[0, max_val * 1.35]), showlegend=False)
         fig_mult.update_traces(texttemplate='NT$ %{text:,.0f}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_mult, use_container_width=True)
     with col2:
         st.subheader("🛡 壓力測試：最大回撤 (MDD)")
         df_chart_mdd = df_comp.sort_values(by="最大回撤", ascending=True)
         min_mdd = df_chart_mdd["最大回撤"].min()
-        fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="類型", orientation='h', text="最大回撤",
-            color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_mdd.update_layout(xaxis=dict(range=[min_mdd * 1.3, 0]), xaxis_tickformat='.0%')
+        fig_mdd = px.bar(df_chart_mdd, x="最大回撤", y="策略名稱", color="策略名稱", orientation='h', text="最大回撤", color_discrete_map=color_map)
+        fig_mdd.update_layout(xaxis=dict(range=[min_mdd * 1.3, 0]), xaxis_tickformat='.0%', showlegend=False)
         fig_mdd.update_traces(texttemplate='%{text:.2%}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_mdd, use_container_width=True)
 
@@ -581,18 +597,16 @@ if not df_comp.empty:
         st.subheader("🎯 策略卡瑪比率 (每單位回撤帶來的利潤)")
         df_chart_calmar = df_comp.sort_values(by="卡瑪比率", ascending=True)
         max_calmar = df_chart_calmar["卡瑪比率"].max()
-        fig_calmar = px.bar(df_chart_calmar, x="卡瑪比率", y="策略名稱", color="類型", orientation='h', text="卡瑪比率",
-            color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_calmar.update_layout(xaxis=dict(range=[0, max_calmar * 1.25]))
+        fig_calmar = px.bar(df_chart_calmar, x="卡瑪比率", y="策略名稱", color="策略名稱", orientation='h', text="卡瑪比率", color_discrete_map=color_map)
+        fig_calmar.update_layout(xaxis=dict(range=[0, max_calmar * 1.25]), showlegend=False)
         fig_calmar.update_traces(texttemplate='%{text:.3f}', textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_calmar, use_container_width=True)
     with col4:
         st.subheader("⏳ 最長套牢修復期 (越短越好)")
         df_chart_rec = df_comp.sort_values(by="最大修復天數", ascending=False)
         max_rec = df_chart_rec["最大修復天數"].max()
-        fig_rec = px.bar(df_chart_rec, x="最大修復天數", y="策略名稱", color="類型", orientation='h', text="最大修復天數",
-            color_discrete_map={"純大盤對照": "#7f7f7f", "經典對照": "#54A24B", "自訂戰略": "#E45756"})
-        fig_rec.update_layout(xaxis=dict(range=[0, max_rec * 1.35]))
+        fig_rec = px.bar(df_chart_rec, x="最大修復天數", y="策略名稱", color="策略名稱", orientation='h', text="最大修復天數", color_discrete_map=color_map)
+        fig_rec.update_layout(xaxis=dict(range=[0, max_rec * 1.35]), showlegend=False)
         df_display_rec_text = df_chart_rec["最大修復天數"].apply(lambda x: f"{x:,} 天" if x < 9999 else "已斷頭破產")
         fig_rec.update_traces(text=df_display_rec_text, textposition='outside', cliponaxis=False)
         st.plotly_chart(fig_rec, use_container_width=True)
@@ -601,7 +615,7 @@ if not df_comp.empty:
     if curve_chart_data:
         df_curves = pd.DataFrame(curve_chart_data)
         df_curves_sampled = df_curves.iloc[::5, :]
-        fig_curves = px.line(df_curves_sampled, x="日期", y="淨值", color="策略名稱", log_y=True)
+        fig_curves = px.line(df_curves_sampled, x="日期", y="淨值", color="策略名稱", log_y=True, color_discrete_map=color_map)
         fig_curves.update_layout(yaxis_title="資產淨值 (NT$)", xaxis_title="日期", height=450)
         st.plotly_chart(fig_curves, use_container_width=True)
         
@@ -613,7 +627,7 @@ if not df_comp.empty:
         if reg_margin_chart_data:
             df_reg = pd.DataFrame(reg_margin_chart_data)
             df_reg_sampled = df_reg.iloc[::5, :]
-            fig_reg = px.line(df_reg_sampled, x="日期", y="法規維持率", color="策略名稱")
+            fig_reg = px.line(df_reg_sampled, x="日期", y="法規維持率", color="策略名稱", color_discrete_map=color_map)
             fig_reg.add_hline(y=1.4, line_dash="dash", line_color="red", annotation_text="140% 斷頭線")
             fig_reg.update_layout(yaxis_tickformat='.0%', yaxis_title="維持率", xaxis_title="日期", height=400)
             fig_reg.update_yaxes(range=[0, 10])
@@ -623,7 +637,7 @@ if not df_comp.empty:
         if bond_margin_chart_data:
             df_bond = pd.DataFrame(bond_margin_chart_data)
             df_bond_sampled = df_bond.iloc[::5, :]
-            fig_bond = px.line(df_bond_sampled, x="日期", y="純債維持率", color="策略名稱")
+            fig_bond = px.line(df_bond_sampled, x="日期", y="純債維持率", color="策略名稱", color_discrete_map=color_map)
             fig_bond.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="100% 短債枯竭線")
             fig_bond.update_layout(yaxis_tickformat='.0%', yaxis_title="純債維持率", xaxis_title="日期", height=400)
             fig_bond.update_yaxes(range=[0, 10])
@@ -633,15 +647,6 @@ if not df_comp.empty:
     st.subheader("📆 歷年淨報酬率大亂鬥")
     if annual_chart_data:
         df_annual = pd.DataFrame(annual_chart_data).sort_values(by="年份")
-        color_map = {
-            "純抱 SPY": "#c7c7c7", 
-            "純抱 QQQ": "#7f7f7f", 
-            "經典 CLEC 433 (買借死)": "#1f77b4", 
-            "穩健 623 (恆定增貸)": "#ff7f0e",
-            "防禦 812 (恆定增貸)": "#2ca02c"
-        }
-        custom_colors = px.colors.sequential.Reds[3:] 
-        for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
         fig_annual = px.bar(df_annual, x="年份", y="報酬率", color="策略名稱", barmode="group", color_discrete_map=color_map)
         fig_annual.update_layout(yaxis_tickformat='.0%', yaxis_title="年度淨報酬率", xaxis_title="年份", height=450)
         st.plotly_chart(fig_annual, use_container_width=True)
@@ -660,6 +665,6 @@ if not df_comp.empty:
     * **建議配比**：試試 **`70% QQQ + 0% QLD + 30% SGOV`** 或內建的 **`防禦 812`** 策略。把 SGOV 比例拉高到 30% 甚至 40%，就算遇到 2008 年金融海嘯，你的帳戶跌幅也會比 QQQ 小非常多。
 
     🔥 **目標 3：追求極致的「最終淨值」(承受同等風險，但要賺得比 QQQ 更多)**
-    * **破解思路**：如果你想在牛市中創造比 100% QQQ 更高的絕對淨值，你需要的是 **穩健 623 (恆定增貸)**。
+    * **破解思路**：如果你想在牛市中創造比 100% QQQ 更高的絕對淨值，你需要的是 **穩健 623 (恆定維持率 600%)**。
     * **為什麼是 623？**：仔細看它的配比：`60% QQQ (Beta 1) + 20% QLD (Beta 2) + 30% SGOV (Beta 0)`。這套組合的初始真實 Beta 剛好等於 **1.0**！這意味著你承受的「大盤曝險」與純抱 QQQ 一模一樣。但透過將負債與低成本短債綁定，並利用系統每年自動「逢高增貸再投資」的複利飛輪，這套策略能在長線牛市中榨出比純抱 QQQ 更驚人的最終淨值（當然，代價是在極端空頭時的回撤會稍微深一點）。
     """)
