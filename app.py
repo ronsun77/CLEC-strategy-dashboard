@@ -48,7 +48,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略
+# 2. 初始化預設資產與策略 (💥 新增 00646)
 # ==========================================
 def load_default_assets():
     lib = {
@@ -69,6 +69,7 @@ def load_default_assets():
         ("QLD", "QLD (美股正2)", "Leverage"),
         ("0050.TW", "0050 (台股大盤)", "Prototype"),
         ("00662.TW", "00662 (NAS原型)", "Prototype"),
+        ("00646.TW", "00646 (標普原型)", "Prototype"), # 💥 新增 00646 預設選項
         ("00713.TW", "00713 (台股高息)", "Prototype"),
         ("00631L.TW", "00631L (台股正2)", "Leverage"),
         ("00670L.TW", "00670L (美股正2)", "Leverage"),
@@ -324,7 +325,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 自動化防禦機制 (Auto-Margin Defense)
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         
         if current_debt_amount > 0:
@@ -743,7 +743,6 @@ if not df_comp.empty:
         
     st.markdown("---")
     
-    # 💥 全新版：無底色的純淨文字 AI 報告，嚴格過濾 400% 維持率門檻
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
     if not valid_df.empty:
@@ -783,7 +782,6 @@ if not df_comp.empty:
                         
                 df_ai = pd.DataFrame(ai_results)
                 
-                # 再次嚴格篩選：只挑選完全沒有破產，且極限回撤沒有深達 -95% 的策略
                 df_ai_valid = df_ai[(df_ai["狀態"] == "安全存活") & (df_ai["最大回撤"] > -0.95)]
                 
                 def format_ai_wts(row):
