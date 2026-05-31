@@ -804,13 +804,14 @@ if not df_comp.empty:
                                 w_main = remaining_beta / beta_main_proto if beta_main_proto != 0 else 0.0
                                 w_sec = 0.0
                                 
-                            for w_def in [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0]:
+                            # 💥 SGOV 搜尋間距也調整為 5.0
+                            for w_def in np.arange(0.0, 65.0, 5.0):
                                 
-                                # 💥 嚴格防呆：將算出來的權重強制對齊 0.5% 的最小跳動刻度
-                                w_main_rounded = round(w_main * 2.0) / 2.0
-                                w_sec_rounded = round(w_sec * 2.0) / 2.0
-                                w_lev_rounded = round(w_lev * 2.0) / 2.0
-                                w_def_rounded = round(w_def * 2.0) / 2.0
+                                # 💥 嚴格防呆：將算出來的權重強制對齊 5.0% 的最小跳動刻度
+                                w_main_rounded = round(w_main / 5.0) * 5.0
+                                w_sec_rounded = round(w_sec / 5.0) * 5.0
+                                w_lev_rounded = round(w_lev / 5.0) * 5.0
+                                w_def_rounded = round(w_def / 5.0) * 5.0
 
                                 debt = (w_main_rounded + w_sec_rounded + w_lev_rounded + w_def_rounded) - 100.0
                                 if debt <= 0: continue 
