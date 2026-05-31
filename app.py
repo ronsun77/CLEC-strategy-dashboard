@@ -125,6 +125,7 @@ if missing_assets:
 
 st.sidebar.markdown("### 歷史回測與分析引擎")
 
+# 💥 動態擷取當前啟用的資產
 active_assets = set()
 for strats in [st.session_state.benchmark_strategies, st.session_state.custom_strategies]:
     for config in strats.values():
@@ -331,7 +332,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 自動化防禦機制 (Auto-Margin Defense)
+        # 自動化防禦機制
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         
         if current_debt_amount > 0:
@@ -564,7 +565,7 @@ if not df_comp.empty:
     with st.expander("📖 點擊查看【再平衡心法】與【量化指標】白話文說明", expanded=False):
         st.markdown("""
         #### 🔄 再平衡模式說明
-        * **不執行**：買入後死抱到底，不調整 any 比例。
+        * **不執行**：買入後死抱到底，不調整任何比例。
         * **傳統定時**：每年底固定強制將部位調回你設定的初始權重。
         * **CLEC (年度常規)**：每年底檢視。若槓桿部位賺錢，抽取 30% 獲利轉入短債；若虧損，從短債水庫抽取 2% 資金救援槓桿。
         * **CLEC 彈性 (防守型)**：不限年底，每日監控。總資產上漲 15% 就提早「獲利了結 (抽45%)」；下跌 10% 啟動輕度救援。適合重視安全墊的保守派。
@@ -751,7 +752,7 @@ if not df_comp.empty:
         
     st.markdown("---")
     
-    # 💥 全域跨市場四維尋優引擎 (納入 0050.TW 聯立計算)
+    # 💥 終極全域跨市場尋優引擎 (動態綁定使用者資產池)
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
     if not valid_df.empty:
@@ -761,46 +762,59 @@ if not df_comp.empty:
         if has_qqq_baseline:
             qqq_stats = qqq_baseline.iloc[0]
             
-            with st.spinner(f"⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，解鎖 0050 進行跨市場聯立權重解算..."):
+            with st.spinner(f"⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，自動擷取您的專屬資產池進行動態權重解算..."):
+                
+                # 💥 智慧資產池探測：只抓取有被啟用的原型、槓桿、防守部位
+                ai_protos = [a for a in active_assets if st.session_state.asset_library.get(a, {}).get("type") == "Prototype" and a != "現金"]
+                ai_levs = [a for a in active_assets if st.session_state.asset_library.get(a, {}).get("type") == "Leverage"]
+                ai_defs = [a for a in active_assets if st.session_state.asset_library.get(a, {}).get("type") == "Defensive" and a != "現金"]
+
+                # 設定主副武器
+                main_proto = ai_protos[0] if ai_protos else "QQQ (美股大盤)"
+                sec_proto = ai_protos[1] if len(ai_protos) > 1 else None
+                main_lev = ai_levs[0] if ai_levs else "QLD (美股正2)"
+                main_def = ai_defs[0] if ai_defs else "SGOV (美股超短債)"
+
+                beta_main_proto = st.session_state.asset_library[main_proto].get("beta", 1.0)
+                beta_sec_proto = st.session_state.asset_library[sec_proto].get("beta", 1.0) if sec_proto else 1.0
+                beta_lev = st.session_state.asset_library[main_lev].get("beta", 2.0)
                 
                 ai_results = []
                 target_beta_scaled = target_ai_beta * 100.0
                 
-                has_0050 = "0050 (台股大盤)" in st.session_state.asset_library
-                beta_0050 = st.session_state.asset_library["0050 (台股大盤)"]["beta"] if has_0050 else 0.0
-                
                 for rebal_ai in ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)"]:
-                    for w_qld in np.arange(0.0, (target_beta_scaled / 2) + 5.0, 5.0):
-                        remaining_beta = target_beta_scaled - (w_qld * 2.0)
+                    # 動態根據槓桿資產的真實 Beta 來推進迴圈
+                    max_lev_wts = (target_beta_scaled / beta_lev) + 5.0 if beta_lev > 0 else 5.0
+                    for w_lev in np.arange(0.0, max_lev_wts, 5.0):
+                        remaining_beta = target_beta_scaled - (w_lev * beta_lev)
                         if remaining_beta < 0: continue
                         
-                        # 💥 驚喜改寫：若庫存裡有 0050，動態調配 0050 與 QQQ 在原型部位裡的佔比 (r)
-                        ratios = [0.0, 0.3, 0.5, 0.7, 1.0] if has_0050 else [0.0]
+                        # 若有兩個原型資產，展開跨市場組合配比
+                        ratios = [0.0, 0.3, 0.5, 0.7, 1.0] if sec_proto else [0.0]
                         for r in ratios:
-                            if has_0050 and r > 0:
-                                denom = (1.0 - r) + r * beta_0050
-                                w_proto = remaining_beta / denom if denom != 0 else 0.0
-                                w_0050 = w_proto * r
-                                w_qqq = w_proto * (1.0 - r)
+                            if sec_proto and r > 0:
+                                denom = (1.0 - r) * beta_main_proto + r * beta_sec_proto
+                                w_total_proto = remaining_beta / denom if denom != 0 else 0.0
+                                w_sec = w_total_proto * r
+                                w_main = w_total_proto * (1.0 - r)
                             else:
-                                w_qqq = remaining_beta
-                                w_0050 = 0.0
+                                w_main = remaining_beta / beta_main_proto if beta_main_proto != 0 else 0.0
+                                w_sec = 0.0
                                 
-                            for w_sgov in [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0]:
-                                debt = (w_qqq + w_0050 + w_qld + w_sgov) - 100.0
+                            for w_def in [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0]:
+                                debt = (w_main + w_sec + w_lev + w_def) - 100.0
                                 if debt <= 0: continue 
                                 
-                                w_legal = w_qqq + w_0050
+                                w_legal = w_main + w_sec
                                 actual_target_margin = w_legal / debt
                                 
                                 if actual_target_margin < 4.0: continue
                                 
-                                # 組裝動態 Wts
                                 tmp_wts = {}
-                                if w_qqq > 0: tmp_wts["QQQ (美股大盤)"] = round(w_qqq, 1)
-                                if w_0050 > 0: tmp_wts["0050 (台股大盤)"] = round(w_0050, 1)
-                                if w_qld > 0: tmp_wts["QLD (美股正2)"] = round(w_qld, 1)
-                                if w_sgov > 0: tmp_wts["SGOV (美股超短債)"] = round(w_sgov, 1)
+                                if w_main > 0: tmp_wts[main_proto] = round(w_main, 1)
+                                if w_sec > 0: tmp_wts[sec_proto] = round(w_sec, 1)
+                                if w_lev > 0: tmp_wts[main_lev] = round(w_lev, 1)
+                                if w_def > 0: tmp_wts[main_def] = round(w_def, 1)
                                 
                                 config = {
                                     "wts": tmp_wts,
@@ -824,7 +838,7 @@ if not df_comp.empty:
                     debt_short = "恆定維持率" if "恆定" in row['debt_config'] else "買借死"
                     return f"**`{wts_str}`** (再平衡: {row['rebal_config']} ｜ {debt_short} {int(row['target_margin_pct'])}%)"
 
-                st.info(f"系統已根據您選擇的 `{start_date} ~ {end_date}` 區間進行了背景網格運算。在**「保證絕對存活」**、**「鎖定目標 Beta = {target_ai_beta:.1f}」** 且 **「納入 0050 與 QQQ 共同解算」** 的雙重前提下，為您找出以下實戰黃金比例：")
+                st.info(f"系統已自動偵測您的資產池 `[{main_proto.split(' ')[0]}, {sec_proto.split(' ')[0] if sec_proto else ''}, {main_lev.split(' ')[0]}, {main_def.split(' ')[0]}]`。在**「保證絕對存活」**且**「鎖定目標 Beta = {target_ai_beta:.1f}」** 的前提下，為您找出以下實戰黃金比例：")
 
                 if not df_ai_valid.empty:
                     # 目標 1
@@ -833,7 +847,7 @@ if not df_comp.empty:
                     if ai_best_sharpe["夏普值"] > qqq_stats["夏普值"]:
                         st.markdown(f"相比純抱 QQQ (夏普值 {qqq_stats['夏普值']:.3f})，系統找到以下最佳跨市場平衡點：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：成功將夏普值推升至 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
                     else:
-                        st.markdown(f"系統算盡此條件下的所有組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 的風險收益比仍難以被超越。但若您必須維持質押與提領架構，以下是系統為您找出的**亞軍配比 (Top Alternative)**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：夏普值達 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
+                        st.markdown(f"系統算盡此條件下的所有組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 的風險收益比仍難以被超越。以下是系統為您找出的**亞軍配比**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：夏普值達 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
                     st.markdown("<br>", unsafe_allow_html=True)
 
                     # 目標 2
@@ -842,7 +856,7 @@ if not df_comp.empty:
                     if ai_best_mdd["最大回撤"] > qqq_stats["最大回撤"]:
                         st.markdown(f"若您覺得純 QQQ 的跌幅 ({qqq_stats['最大回撤']*100:.2f}%) 太高，系統為您找到以下最佳鐵壁防禦：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤壓低至 **{ai_best_mdd['最大回撤']*100:.2f}%**，痛苦指數降至 **{ai_best_mdd['痛苦指數']:.2f}**。")
                     else:
-                        st.markdown(f"在此 Beta 區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。若您希望在維持槓桿架構下盡可能抗跌，以下是系統找出的**最強防禦亞軍**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})。")
+                        st.markdown(f"在此 Beta 區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。以下是系統找出的**最強防禦亞軍**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})。")
                     st.markdown("<br>", unsafe_allow_html=True)
 
                     # 目標 3
@@ -851,7 +865,7 @@ if not df_comp.empty:
                     if ai_best_equity["最終淨值"] > qqq_stats["最終淨值"]:
                         st.markdown(f"在您設定的限制下，系統發現能創造更高絕對獲利的配置：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：將最終淨值推升至 **NT$ {ai_best_equity['最終淨值']:,.0f}** (勝過 QQQ 的 NT$ {qqq_stats['最終淨值']:,.0f})！")
                     else:
-                        st.markdown(f"系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。若您想嘗試利用指定架構逼近極限，以下是**獲利亞軍配比**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)。")
+                        st.markdown(f"系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。以下是**獲利亞軍配比**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)。")
                 else:
                     st.error(f"⚠️ 系統在進行背景網格尋優時，發現在此區間內，無法找到符合安全存活的策略。建議調降 Beta 目標或選擇恆定維持率模式。")
         else:
