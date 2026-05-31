@@ -125,7 +125,6 @@ if missing_assets:
 
 st.sidebar.markdown("### 歷史回測與分析引擎")
 
-# 💥 動態擷取當前啟用的資產
 active_assets = set()
 for strats in [st.session_state.benchmark_strategies, st.session_state.custom_strategies]:
     for config in strats.values():
@@ -182,6 +181,17 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 AI 動態尋優設定")
 target_ai_beta = st.sidebar.number_input("AI 尋優目標 Beta (預設 1.0)", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
 target_ai_debt_mode = st.sidebar.selectbox("AI 尋優指定負債模式", ["恆定維持率 (增貸再投資)", "買借死 (提領生活費)"])
+
+# 💥 全新模組：專屬 AI 資產池，預設為 QQQ, QLD, SGOV
+st.sidebar.markdown("##### 🎯 AI 專屬尋優資產池")
+ai_asset_opts = list(st.session_state.asset_library.keys())
+def get_idx(name):
+    return ai_asset_opts.index(name) if name in ai_asset_opts else 0
+
+ai_proto_1 = st.sidebar.selectbox("AI 尋優原型資產 1", ai_asset_opts, index=get_idx("QQQ (美股大盤)"))
+ai_proto_2 = st.sidebar.selectbox("AI 尋優原型資產 2 (選填)", ai_asset_opts, index=get_idx("無 (不配置)"))
+ai_lev = st.sidebar.selectbox("AI 尋優槓桿資產", ai_asset_opts, index=get_idx("QLD (美股正2)"))
+ai_def = st.sidebar.selectbox("AI 尋優防守資產", ai_asset_opts, index=get_idx("SGOV (美股超短債)"))
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
@@ -752,7 +762,6 @@ if not df_comp.empty:
         
     st.markdown("---")
     
-    # 💥 終極全域跨市場尋優引擎 (動態綁定使用者資產池)
     st.markdown("### 🤖 系統判斷與優化建議 (AI 動態尋優)")
     
     if not valid_df.empty:
@@ -762,34 +771,31 @@ if not df_comp.empty:
         if has_qqq_baseline:
             qqq_stats = qqq_baseline.iloc[0]
             
-            with st.spinner(f"⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，自動擷取您的專屬資產池進行動態權重解算..."):
-                
-                # 💥 智慧資產池探測：只抓取有被啟用的原型、槓桿、防守部位
-                ai_protos = [a for a in active_assets if st.session_state.asset_library.get(a, {}).get("type") == "Prototype" and a != "現金"]
-                ai_levs = [a for a in active_assets if st.session_state.asset_library.get(a, {}).get("type") == "Leverage"]
-                ai_defs = [a for a in active_assets if st.session_state.asset_library.get(a, {}).get("type") == "Defensive" and a != "現金"]
+            # 💥 綁定使用者的專屬選單
+            main_proto = ai_proto_1 if ai_proto_1 != "無 (不配置)" else "QQQ (美股大盤)"
+            sec_proto = ai_proto_2 if ai_proto_2 != "無 (不配置)" else None
+            main_lev = ai_lev if ai_lev != "無 (不配置)" else "QLD (美股正2)"
+            main_def = ai_def if ai_def != "無 (不配置)" else "SGOV (美股超短債)"
 
-                # 設定主副武器
-                main_proto = ai_protos[0] if ai_protos else "QQQ (美股大盤)"
-                sec_proto = ai_protos[1] if len(ai_protos) > 1 else None
-                main_lev = ai_levs[0] if ai_levs else "QLD (美股正2)"
-                main_def = ai_defs[0] if ai_defs else "SGOV (美股超短債)"
-
-                beta_main_proto = st.session_state.asset_library[main_proto].get("beta", 1.0)
-                beta_sec_proto = st.session_state.asset_library[sec_proto].get("beta", 1.0) if sec_proto else 1.0
-                beta_lev = st.session_state.asset_library[main_lev].get("beta", 2.0)
+            beta_main_proto = st.session_state.asset_library.get(main_proto, {}).get("beta", 1.0)
+            beta_sec_proto = st.session_state.asset_library.get(sec_proto, {}).get("beta", 1.0) if sec_proto else 1.0
+            beta_lev = st.session_state.asset_library.get(main_lev, {}).get("beta", 2.0)
+            
+            pool_str = f"{main_proto.split(' ')[0]}"
+            if sec_proto: pool_str += f", {sec_proto.split(' ')[0]}"
+            pool_str += f", {main_lev.split(' ')[0]}, {main_def.split(' ')[0]}"
+            
+            with st.spinner(f"⏳ 系統正在背景進行極限參數網格搜索，根據您指定的專屬資產池 [{pool_str}] 進行動態權重解算..."):
                 
                 ai_results = []
                 target_beta_scaled = target_ai_beta * 100.0
                 
                 for rebal_ai in ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)"]:
-                    # 動態根據槓桿資產的真實 Beta 來推進迴圈
                     max_lev_wts = (target_beta_scaled / beta_lev) + 5.0 if beta_lev > 0 else 5.0
                     for w_lev in np.arange(0.0, max_lev_wts, 5.0):
                         remaining_beta = target_beta_scaled - (w_lev * beta_lev)
                         if remaining_beta < 0: continue
                         
-                        # 若有兩個原型資產，展開跨市場組合配比
                         ratios = [0.0, 0.3, 0.5, 0.7, 1.0] if sec_proto else [0.0]
                         for r in ratios:
                             if sec_proto and r > 0:
@@ -838,14 +844,14 @@ if not df_comp.empty:
                     debt_short = "恆定維持率" if "恆定" in row['debt_config'] else "買借死"
                     return f"**`{wts_str}`** (再平衡: {row['rebal_config']} ｜ {debt_short} {int(row['target_margin_pct'])}%)"
 
-                st.info(f"系統已自動偵測您的資產池 `[{main_proto.split(' ')[0]}, {sec_proto.split(' ')[0] if sec_proto else ''}, {main_lev.split(' ')[0]}, {main_def.split(' ')[0]}]`。在**「保證絕對存活」**且**「鎖定目標 Beta = {target_ai_beta:.1f}」** 的前提下，為您找出以下實戰黃金比例：")
+                st.info(f"系統已根據您專屬的資產池 `{pool_str}` 進行解算。在**「保證絕對存活」**且**「鎖定目標 Beta = {target_ai_beta:.1f}」** 的前提下，為您找出以下實戰黃金比例：")
 
                 if not df_ai_valid.empty:
                     # 目標 1
                     ai_best_sharpe = df_ai_valid.loc[df_ai_valid["夏普值"].idxmax()]
                     st.markdown("""<div style="background-color: rgba(74, 222, 128, 0.2); padding: 8px 15px; border-radius: 5px; color: #4ade80; font-weight: bold; margin-bottom: 10px;">💡 目標：更高的 CP 值 (漲得穩)</div>""", unsafe_allow_html=True)
                     if ai_best_sharpe["夏普值"] > qqq_stats["夏普值"]:
-                        st.markdown(f"相比純抱 QQQ (夏普值 {qqq_stats['夏普值']:.3f})，系統找到以下最佳跨市場平衡點：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：成功將夏普值推升至 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
+                        st.markdown(f"相比純抱 QQQ (夏普值 {qqq_stats['夏普值']:.3f})，系統找到以下最佳平衡點：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：成功將夏普值推升至 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
                     else:
                         st.markdown(f"系統算盡此條件下的所有組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 的風險收益比仍難以被超越。以下是系統為您找出的**亞軍配比**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：夏普值達 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
                     st.markdown("<br>", unsafe_allow_html=True)
