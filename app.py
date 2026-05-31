@@ -182,7 +182,6 @@ st.sidebar.subheader("🤖 AI 動態尋優設定")
 target_ai_beta = st.sidebar.number_input("AI 尋優目標 Beta (預設 1.0)", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
 target_ai_debt_mode = st.sidebar.selectbox("AI 尋優指定負債模式", ["恆定維持率 (增貸再投資)", "買借死 (提領生活費)"])
 
-# 💥 全新模組：專屬 AI 資產池，預設為 QQQ, QLD, SGOV
 st.sidebar.markdown("##### 🎯 AI 專屬尋優資產池")
 ai_asset_opts = list(st.session_state.asset_library.keys())
 def get_idx(name):
@@ -342,7 +341,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 自動化防禦機制
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         
         if current_debt_amount > 0:
@@ -771,7 +769,6 @@ if not df_comp.empty:
         if has_qqq_baseline:
             qqq_stats = qqq_baseline.iloc[0]
             
-            # 💥 綁定使用者的專屬選單
             main_proto = ai_proto_1 if ai_proto_1 != "無 (不配置)" else "QQQ (美股大盤)"
             sec_proto = ai_proto_2 if ai_proto_2 != "無 (不配置)" else None
             main_lev = ai_lev if ai_lev != "無 (不配置)" else "QLD (美股正2)"
@@ -808,19 +805,26 @@ if not df_comp.empty:
                                 w_sec = 0.0
                                 
                             for w_def in [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0]:
-                                debt = (w_main + w_sec + w_lev + w_def) - 100.0
+                                
+                                # 💥 嚴格防呆：將算出來的權重強制對齊 0.5% 的最小跳動刻度
+                                w_main_rounded = round(w_main * 2.0) / 2.0
+                                w_sec_rounded = round(w_sec * 2.0) / 2.0
+                                w_lev_rounded = round(w_lev * 2.0) / 2.0
+                                w_def_rounded = round(w_def * 2.0) / 2.0
+
+                                debt = (w_main_rounded + w_sec_rounded + w_lev_rounded + w_def_rounded) - 100.0
                                 if debt <= 0: continue 
                                 
-                                w_legal = w_main + w_sec
-                                actual_target_margin = w_legal / debt
+                                w_legal = w_main_rounded + w_sec_rounded
+                                actual_target_margin = w_legal / debt if debt > 0 else 999.0
                                 
                                 if actual_target_margin < 4.0: continue
                                 
                                 tmp_wts = {}
-                                if w_main > 0: tmp_wts[main_proto] = round(w_main, 1)
-                                if w_sec > 0: tmp_wts[sec_proto] = round(w_sec, 1)
-                                if w_lev > 0: tmp_wts[main_lev] = round(w_lev, 1)
-                                if w_def > 0: tmp_wts[main_def] = round(w_def, 1)
+                                if w_main_rounded > 0: tmp_wts[main_proto] = w_main_rounded
+                                if w_sec_rounded > 0: tmp_wts[sec_proto] = w_sec_rounded
+                                if w_lev_rounded > 0: tmp_wts[main_lev] = w_lev_rounded
+                                if w_def_rounded > 0: tmp_wts[main_def] = w_def_rounded
                                 
                                 config = {
                                     "wts": tmp_wts,
