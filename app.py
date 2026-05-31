@@ -48,7 +48,7 @@ def fetch_asset_base_data(ticker, asset_type):
         return None, f"抓取失敗: {str(e)}"
 
 # ==========================================
-# 2. 初始化預設資產與策略 (💥 新增 00646)
+# 2. 初始化預設資產與策略 (💥 包含 00646 與彈性 812)
 # ==========================================
 def load_default_assets():
     lib = {
@@ -69,7 +69,7 @@ def load_default_assets():
         ("QLD", "QLD (美股正2)", "Leverage"),
         ("0050.TW", "0050 (台股大盤)", "Prototype"),
         ("00662.TW", "00662 (NAS原型)", "Prototype"),
-        ("00646.TW", "00646 (標普原型)", "Prototype"), # 💥 新增 00646 預設選項
+        ("00646.TW", "00646 (標普原型)", "Prototype"),
         ("00713.TW", "00713 (台股高息)", "Prototype"),
         ("00631L.TW", "00631L (台股正2)", "Leverage"),
         ("00670L.TW", "00670L (美股正2)", "Leverage"),
@@ -99,12 +99,14 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
+# 💥 內建對照組新增：彈性防禦 812
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
     "穩健 623 (恆定維持率 600%)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
-    "防禦 812 (恆定維持率 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0}
+    "防禦 812 (年度常規 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0},
+    "彈性防禦 812 (防守型 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC彈性(防守)", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0}
 }
 
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
@@ -207,7 +209,7 @@ with st.sidebar.form("auto_fetch_form"):
                 st.rerun()
 
 # ==========================================
-# 4. 核心計算引擎 
+# 4. 核心計算引擎
 # ==========================================
 def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value):
     weights_dict = strategy_config["wts"]
@@ -325,6 +327,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
+        # 自動化防禦機制 (Auto-Margin Defense)
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         
         if current_debt_amount > 0:
@@ -642,9 +645,12 @@ if not df_comp.empty:
         st.subheader("💰 最終資產淨值排行 (NT$)")
         df_chart_multiple = df_comp.sort_values(by="最終淨值", ascending=True)
         max_val = df_chart_multiple["最終淨值"].max()
+        
+        # 💥 確保顏色對應包含彈性防禦 812
         color_map = {
             "純抱 SPY": "#c7c7c7", "純抱 QQQ": "#7f7f7f", 
-            "經典 CLEC 433 (買借死)": "#1f77b4", "穩健 623 (恆定維持率 600%)": "#ff7f0e", "防禦 812 (恆定維持率 800%)": "#2ca02c"
+            "經典 CLEC 433 (買借死)": "#1f77b4", "穩健 623 (恆定維持率 600%)": "#ff7f0e", 
+            "防禦 812 (年度常規 800%)": "#2ca02c", "彈性防禦 812 (防守型 800%)": "#059669"
         }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
@@ -764,7 +770,6 @@ if not df_comp.empty:
                             
                             actual_target_margin = w_qqq / debt 
                             
-                            # 💥 嚴格防呆：過濾掉目標維持率小於 400% 的自殺式設定
                             if actual_target_margin < 4.0: continue
                             
                             config = {
@@ -781,7 +786,6 @@ if not df_comp.empty:
                             ai_results.append(res)
                         
                 df_ai = pd.DataFrame(ai_results)
-                
                 df_ai_valid = df_ai[(df_ai["狀態"] == "安全存活") & (df_ai["最大回撤"] > -0.95)]
                 
                 def format_ai_wts(row):
