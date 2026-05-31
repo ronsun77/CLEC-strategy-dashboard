@@ -177,11 +177,20 @@ if withdraw_mode == "總資產百分比 (%)":
 else:
     withdraw_value = st.sidebar.number_input("年提領金額 (元)", min_value=0, value=600000, step=50000)
 
-# 💥 全新設定：讓使用者可以指定 AI 的尋優負債模式
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 AI 動態尋優設定")
 target_ai_beta = st.sidebar.number_input("AI 尋優目標 Beta (預設 1.0)", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
 target_ai_debt_mode = st.sidebar.selectbox("AI 尋優指定負債模式", ["恆定維持率 (增貸再投資)", "買借死 (提領生活費)"])
+
+st.sidebar.markdown("##### 🎯 AI 專屬尋優資產池")
+ai_asset_opts = list(st.session_state.asset_library.keys())
+def get_idx(name):
+    return ai_asset_opts.index(name) if name in ai_asset_opts else 0
+
+ai_proto_1 = st.sidebar.selectbox("AI 尋優原型資產 1", ai_asset_opts, index=get_idx("QQQ (美股大盤)"))
+ai_proto_2 = st.sidebar.selectbox("AI 尋優原型資產 2 (選填)", ai_asset_opts, index=get_idx("無 (不配置)"))
+ai_lev = st.sidebar.selectbox("AI 尋優槓桿資產", ai_asset_opts, index=get_idx("QLD (美股正2)"))
+ai_def = st.sidebar.selectbox("AI 尋優防守資產", ai_asset_opts, index=get_idx("SGOV (美股超短債)"))
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 智能抓取新增資產")
@@ -332,7 +341,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 自動化防禦機制 (Auto-Margin Defense)
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
         
         if current_debt_amount > 0:
@@ -761,42 +769,79 @@ if not df_comp.empty:
         if has_qqq_baseline:
             qqq_stats = qqq_baseline.iloc[0]
             
-            with st.spinner(f"⏳ 系統正在背景進行極限參數網格搜索 (Grid Search)，嚴格鎖定目標 Beta={target_ai_beta:.1f} 與 '{target_ai_debt_mode}' 尋找最優比例..."):
+            main_proto = ai_proto_1 if ai_proto_1 != "無 (不配置)" else "QQQ (美股大盤)"
+            sec_proto = ai_proto_2 if ai_proto_2 != "無 (不配置)" else None
+            main_lev = ai_lev if ai_lev != "無 (不配置)" else "QLD (美股正2)"
+            main_def = ai_def if ai_def != "無 (不配置)" else "SGOV (美股超短債)"
+
+            beta_main_proto = st.session_state.asset_library.get(main_proto, {}).get("beta", 1.0)
+            beta_sec_proto = st.session_state.asset_library.get(sec_proto, {}).get("beta", 1.0) if sec_proto else 1.0
+            beta_lev = st.session_state.asset_library.get(main_lev, {}).get("beta", 2.0)
+            
+            pool_str = f"{main_proto.split(' ')[0]}"
+            if sec_proto: pool_str += f", {sec_proto.split(' ')[0]}"
+            pool_str += f", {main_lev.split(' ')[0]}, {main_def.split(' ')[0]}"
+            
+            with st.spinner(f"⏳ 系統正在背景進行極限參數網格搜索，根據您指定的專屬資產池 [{pool_str}] 進行動態權重解算..."):
                 
                 ai_results = []
                 target_beta_scaled = target_ai_beta * 100.0
                 
-                # 💥 迴圈動態掃描：針對使用者指定的負債模式進行尋優
                 for rebal_ai in ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)"]:
-                    for w_qld in np.arange(0.0, (target_beta_scaled / 2) + 5.0, 5.0):
-                        w_qqq = target_beta_scaled - 2 * w_qld
-                        if w_qqq < 0: continue
+                    max_lev_wts = (target_beta_scaled / beta_lev) + 5.0 if beta_lev > 0 else 5.0
+                    for w_lev in np.arange(0.0, max_lev_wts, 5.0):
+                        remaining_beta = target_beta_scaled - (w_lev * beta_lev)
+                        if remaining_beta < 0: continue
                         
-                        for w_sgov in [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0]:
-                            debt = (w_qqq + w_qld + w_sgov) - 100.0
-                            if debt <= 0: continue 
-                            
-                            actual_target_margin = w_qqq / debt 
-                            
-                            # 嚴格防呆：過濾掉目標維持率小於 400% 的自殺式設定
-                            if actual_target_margin < 4.0: continue
-                            
-                            config = {
-                                "wts": {"QQQ (美股大盤)": w_qqq, "QLD (美股正2)": w_qld, "SGOV (美股超短債)": w_sgov},
-                                "rebal": rebal_ai,
-                                "debt_mode": target_ai_debt_mode, # 💥 動態吃入使用者指定的模式
-                                "target_margin": actual_target_margin
-                            }
-                            
-                            res = calculate_metrics(config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value)
-                            res["wts_config"] = config["wts"]
-                            res["rebal_config"] = config["rebal"]
-                            res["debt_config"] = config["debt_mode"]
-                            res["target_margin_pct"] = actual_target_margin * 100 
-                            ai_results.append(res)
+                        ratios = [0.0, 0.3, 0.5, 0.7, 1.0] if sec_proto else [0.0]
+                        for r in ratios:
+                            if sec_proto and r > 0:
+                                denom = (1.0 - r) * beta_main_proto + r * beta_sec_proto
+                                w_total_proto = remaining_beta / denom if denom != 0 else 0.0
+                                w_sec = w_total_proto * r
+                                w_main = w_total_proto * (1.0 - r)
+                            else:
+                                w_main = remaining_beta / beta_main_proto if beta_main_proto != 0 else 0.0
+                                w_sec = 0.0
+                                
+                            # 💥 SGOV 搜尋間距也調整為 5.0
+                            for w_def in np.arange(0.0, 65.0, 5.0):
+                                
+                                # 💥 嚴格防呆：將算出來的權重強制對齊 5.0% 的最小跳動刻度
+                                w_main_rounded = round(w_main / 5.0) * 5.0
+                                w_sec_rounded = round(w_sec / 5.0) * 5.0
+                                w_lev_rounded = round(w_lev / 5.0) * 5.0
+                                w_def_rounded = round(w_def / 5.0) * 5.0
+
+                                debt = (w_main_rounded + w_sec_rounded + w_lev_rounded + w_def_rounded) - 100.0
+                                if debt <= 0: continue 
+                                
+                                w_legal = w_main_rounded + w_sec_rounded
+                                actual_target_margin = w_legal / debt if debt > 0 else 999.0
+                                
+                                if actual_target_margin < 4.0: continue
+                                
+                                tmp_wts = {}
+                                if w_main_rounded > 0: tmp_wts[main_proto] = w_main_rounded
+                                if w_sec_rounded > 0: tmp_wts[sec_proto] = w_sec_rounded
+                                if w_lev_rounded > 0: tmp_wts[main_lev] = w_lev_rounded
+                                if w_def_rounded > 0: tmp_wts[main_def] = w_def_rounded
+                                
+                                config = {
+                                    "wts": tmp_wts,
+                                    "rebal": rebal_ai,
+                                    "debt_mode": target_ai_debt_mode,
+                                    "target_margin": actual_target_margin
+                                }
+                                
+                                res = calculate_metrics(config, margin_rate, start_date, end_date, init_capital, withdraw_mode, withdraw_value)
+                                res["wts_config"] = config["wts"]
+                                res["rebal_config"] = config["rebal"]
+                                res["debt_config"] = config["debt_mode"]
+                                res["target_margin_pct"] = actual_target_margin * 100 
+                                ai_results.append(res)
                         
                 df_ai = pd.DataFrame(ai_results)
-                
                 df_ai_valid = df_ai[(df_ai["狀態"] == "安全存活") & (df_ai["最大回撤"] > -0.95)] if not df_ai.empty else pd.DataFrame()
                 
                 def format_ai_wts(row):
@@ -804,7 +849,7 @@ if not df_comp.empty:
                     debt_short = "恆定維持率" if "恆定" in row['debt_config'] else "買借死"
                     return f"**`{wts_str}`** (再平衡: {row['rebal_config']} ｜ {debt_short} {int(row['target_margin_pct'])}%)"
 
-                st.info(f"系統已根據您選擇的 `{start_date} ~ {end_date}` 區間進行了背景網格運算。在**「保證絕對存活」**、**「鎖定目標 Beta = {target_ai_beta:.1f}」** 以及 **「{target_ai_debt_mode}」** 的前提下，為您找出以下實戰黃金比例：")
+                st.info(f"系統已根據您專屬的資產池 `{pool_str}` 進行解算。在**「保證絕對存活」**且**「鎖定目標 Beta = {target_ai_beta:.1f}」** 的前提下，為您找出以下實戰黃金比例：")
 
                 if not df_ai_valid.empty:
                     # 目標 1
@@ -813,7 +858,7 @@ if not df_comp.empty:
                     if ai_best_sharpe["夏普值"] > qqq_stats["夏普值"]:
                         st.markdown(f"相比純抱 QQQ (夏普值 {qqq_stats['夏普值']:.3f})，系統找到以下最佳平衡點：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：成功將夏普值推升至 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
                     else:
-                        st.markdown(f"系統算盡此條件下的所有組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 的風險收益比仍難以被超越。但若您必須維持質押與提領架構，以下是系統為您找出的**亞軍配比 (Top Alternative)**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：夏普值達 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
+                        st.markdown(f"系統算盡此條件下的所有組合，發現 `純抱 QQQ` (夏普值 {qqq_stats['夏普值']:.3f}) 的風險收益比仍難以被超越。以下是系統為您找出的**亞軍配比**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_sharpe)}\n* **模擬成效**：夏普值達 **{ai_best_sharpe['夏普值']:.3f}** (年化報酬 {ai_best_sharpe['CAGR']*100:.2f}%)。")
                     st.markdown("<br>", unsafe_allow_html=True)
 
                     # 目標 2
@@ -822,7 +867,7 @@ if not df_comp.empty:
                     if ai_best_mdd["最大回撤"] > qqq_stats["最大回撤"]:
                         st.markdown(f"若您覺得純 QQQ 的跌幅 ({qqq_stats['最大回撤']*100:.2f}%) 太高，系統為您找到以下最佳鐵壁防禦：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤壓低至 **{ai_best_mdd['最大回撤']*100:.2f}%**，痛苦指數降至 **{ai_best_mdd['痛苦指數']:.2f}**。")
                     else:
-                        st.markdown(f"在此 Beta 區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。若您希望在維持槓桿架構下盡可能抗跌，以下是系統找出的**最強防禦亞軍**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})。")
+                        st.markdown(f"在此 Beta 區間內，`純抱 QQQ` ({qqq_stats['最大回撤']*100:.2f}%) 的防禦力為榜首。以下是系統找出的**最強防禦亞軍**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_mdd)}\n* **模擬成效**：成功將極限回撤控制在 **{ai_best_mdd['最大回撤']*100:.2f}%** (痛苦指數 {ai_best_mdd['痛苦指數']:.2f})。")
                     st.markdown("<br>", unsafe_allow_html=True)
 
                     # 目標 3
@@ -831,8 +876,8 @@ if not df_comp.empty:
                     if ai_best_equity["最終淨值"] > qqq_stats["最終淨值"]:
                         st.markdown(f"在您設定的限制下，系統發現能創造更高絕對獲利的配置：\n* **✨ AI 推薦最優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：將最終淨值推升至 **NT$ {ai_best_equity['最終淨值']:,.0f}** (勝過 QQQ 的 NT$ {qqq_stats['最終淨值']:,.0f})！")
                     else:
-                        st.markdown(f"系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。若您想嘗試利用指定架構逼近極限，以下是**獲利亞軍配比**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)。")
+                        st.markdown(f"系統推演後確認，`純抱 QQQ` 仍是這段時間內的獲利王 (最終淨值 NT$ {qqq_stats['最終淨值']:,.0f})。以下是**獲利亞軍配比**：\n* **✨ AI 推薦次優配比**：{format_ai_wts(ai_best_equity)}\n* **模擬成效**：最終淨值達 **NT$ {ai_best_equity['最終淨值']:,.0f}** (年化報酬 {ai_best_equity['CAGR']*100:.2f}%)。")
                 else:
-                    st.error(f"⚠️ 系統在進行背景網格尋優時，發現在此區間內，無法找到符合 **「Beta={target_ai_beta:.1f}、{target_ai_debt_mode} 且維持率大於 400%」** 的安全存活策略。建議調降 Beta 目標或選擇恆定維持率模式。")
+                    st.error(f"⚠️ 系統在進行背景網格尋優時，發現在此區間內，無法找到符合安全存活的策略。建議調降 Beta 目標或選擇恆定維持率模式。")
         else:
             st.info("⚠️ 若要啟用 AI 網格尋優對比，請確保 `純抱 QQQ` 策略在您的回測區間內處於安全存活狀態。")
