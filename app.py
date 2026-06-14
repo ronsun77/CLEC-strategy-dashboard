@@ -67,13 +67,16 @@ def load_default_assets():
     defaults = [
         ("SPY", "SPY (標普大盤)", "Prototype"),
         ("QLD", "QLD (美股正2)", "Leverage"),
+        ("TQQQ", "TQQQ (美股正3)", "Leverage"), # 💥 新增
         ("0050.TW", "0050 (台股大盤)", "Prototype"),
         ("00662.TW", "00662 (NAS原型)", "Prototype"),
+        ("009800.TW", "009800 (統一美網原型)", "Prototype"), 
         ("00646.TW", "00646 (標普原型)", "Prototype"), 
         ("00713.TW", "00713 (台股高息)", "Prototype"),
         ("00631L.TW", "00631L (台股正2)", "Leverage"),
         ("00670L.TW", "00670L (美股正2)", "Leverage"),
         ("SGOV", "SGOV (美股超短債)", "Defensive"),
+        ("SHY", "SHY (美股1-3年短債)", "Defensive"), # 💥 新增
         ("00865B.TW", "00865B (台股短債)", "Defensive"),
         ("00859B.TW", "00859B (台股投資級債)", "Defensive")
     ]
@@ -99,13 +102,14 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
+# 💥 新增兩種定時再平衡基準策略
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
-    "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
-    "穩健 623 (恆定維持率 600%)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
+    "QLD 50-50 (無負債)": {"wts": {"QLD (美股正2)": 50.0, "SGOV (美股超短債)": 50.0}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0},
+    "TQQQ SGOV 333 (無負債)": {"wts": {"TQQQ (美股正3)": 33.3, "SGOV (美股超短債)": 66.7}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0},
     "防禦 812 (年度常規 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0},
-    "彈性防禦 812 (防守型 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC彈性(防守)", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0}
+    "實戰終極版 (質押10%_維持率800%)": {"wts": {"0050 (台股大盤)": 20.0, "00662 (NAS原型)": 60.0, "00670L (美股正2)": 10.0, "00865B (台股短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0}
 }
 
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
@@ -660,8 +664,10 @@ if not df_comp.empty:
         max_val = df_chart_multiple["最終淨值"].max()
         color_map = {
             "純抱 SPY": "#c7c7c7", "純抱 QQQ": "#7f7f7f", 
-            "經典 CLEC 433 (買借死)": "#1f77b4", "穩健 623 (恆定維持率 600%)": "#ff7f0e", 
-            "防禦 812 (年度常規 800%)": "#2ca02c", "彈性防禦 812 (防守型 800%)": "#059669"
+            "防禦 812 (年度常規 800%)": "#2ca02c",
+            "實戰終極版 (質押10%_維持率800%)": "#d62728",
+            "QLD 50-50 (無負債)": "#9467bd",
+            "TQQQ SGOV 333 (無負債)": "#8c564b"
         }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
@@ -804,10 +810,8 @@ if not df_comp.empty:
                                 w_main = remaining_beta / beta_main_proto if beta_main_proto != 0 else 0.0
                                 w_sec = 0.0
                                 
-                            # 💥 SGOV 搜尋間距也調整為 5.0
                             for w_def in np.arange(0.0, 65.0, 5.0):
                                 
-                                # 💥 嚴格防呆：將算出來的權重強制對齊 5.0% 的最小跳動刻度
                                 w_main_rounded = round(w_main / 5.0) * 5.0
                                 w_sec_rounded = round(w_sec / 5.0) * 5.0
                                 w_lev_rounded = round(w_lev / 5.0) * 5.0
