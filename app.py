@@ -67,7 +67,7 @@ def load_default_assets():
     defaults = [
         ("SPY", "SPY (標普大盤)", "Prototype"),
         ("QLD", "QLD (美股正2)", "Leverage"),
-        ("TQQQ", "TQQQ (美股正3)", "Leverage"), # 💥 新增
+        ("TQQQ", "TQQQ (美股正3)", "Leverage"),
         ("0050.TW", "0050 (台股大盤)", "Prototype"),
         ("00662.TW", "00662 (NAS原型)", "Prototype"),
         ("009800.TW", "009800 (統一美網原型)", "Prototype"), 
@@ -76,7 +76,7 @@ def load_default_assets():
         ("00631L.TW", "00631L (台股正2)", "Leverage"),
         ("00670L.TW", "00670L (美股正2)", "Leverage"),
         ("SGOV", "SGOV (美股超短債)", "Defensive"),
-        ("SHY", "SHY (美股1-3年短債)", "Defensive"), # 💥 新增
+        ("SHY", "SHY (美股1-3年短債)", "Defensive"),
         ("00865B.TW", "00865B (台股短債)", "Defensive"),
         ("00859B.TW", "00859B (台股投資級債)", "Defensive")
     ]
@@ -102,14 +102,16 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
-# 💥 新增兩種定時再平衡基準策略
+# 💥 經典 CLEC 陣容回歸，並保留無負債的恆定 Beta 策略
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
-    "QLD 50-50 (無負債)": {"wts": {"QLD (美股正2)": 50.0, "SGOV (美股超短債)": 50.0}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0},
-    "TQQQ SGOV 333 (無負債)": {"wts": {"TQQQ (美股正3)": 33.3, "SGOV (美股超短債)": 66.7}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0},
+    "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
+    "穩健 623 (恆定維持率 600%)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
     "防禦 812 (年度常規 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0},
-    "實戰終極版 (質押10%_維持率800%)": {"wts": {"0050 (台股大盤)": 20.0, "00662 (NAS原型)": 60.0, "00670L (美股正2)": 10.0, "00865B (台股短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0}
+    "彈性防禦 812 (防守型 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC彈性(防守)", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0},
+    "QLD 50-50 (無負債)": {"wts": {"QLD (美股正2)": 50.0, "SGOV (美股超短債)": 50.0}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0},
+    "TQQQ SGOV 333 (無負債)": {"wts": {"TQQQ (美股正3)": 33.3, "SGOV (美股超短債)": 66.7}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0}
 }
 
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
@@ -223,7 +225,7 @@ with st.sidebar.form("auto_fetch_form"):
                 
                 data["beta"] = calculated_beta
                 st.session_state.asset_library[f"{ticker_upper} (自訂)"] = data
-                st.success(f"{msg} (系統自動精確對標 QQQ 計算之真實 Beta 值 = {calculated_beta:.2f})")
+                st.success(f"{msg} (系統自動精精確對標 QQQ 計算之真實 Beta 值 = {calculated_beta:.2f})")
                 st.rerun()
 
 # ==========================================
@@ -324,6 +326,8 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     ret = 0.02 / 252.0
                 elif asset_info.get("type") == "Leverage":
                     ret = proxy_ret * 2.0 - (0.012 / 252.0)
+                elif asset_info.get("type") == "Leverage3x": # Placeholder if 3x logic is expanded, otherwise treats it via proxy
+                    ret = proxy_ret * 3.0 - (0.02 / 252.0)
                 else:
                     ret = proxy_ret
                     
@@ -664,8 +668,10 @@ if not df_comp.empty:
         max_val = df_chart_multiple["最終淨值"].max()
         color_map = {
             "純抱 SPY": "#c7c7c7", "純抱 QQQ": "#7f7f7f", 
-            "防禦 812 (年度常規 800%)": "#2ca02c",
-            "實戰終極版 (質押10%_維持率800%)": "#d62728",
+            "經典 CLEC 433 (買借死)": "#1f77b4", 
+            "穩健 623 (恆定維持率 600%)": "#ff7f0e", 
+            "防禦 812 (年度常規 800%)": "#2ca02c", 
+            "彈性防禦 812 (防守型 800%)": "#059669",
             "QLD 50-50 (無負債)": "#9467bd",
             "TQQQ SGOV 333 (無負債)": "#8c564b"
         }
