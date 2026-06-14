@@ -102,7 +102,6 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
-# 💥 經典 CLEC 陣容回歸，並保留無負債的恆定 Beta 策略
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
@@ -186,7 +185,8 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 AI 動態尋優設定")
 target_ai_beta = st.sidebar.number_input("AI 尋優目標 Beta (預設 1.0)", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
-target_ai_debt_mode = st.sidebar.selectbox("AI 尋優指定負債模式", ["恆定維持率 (增貸再投資)", "買借死 (提領生活費)"])
+# 💥 解放下拉選單，加入「無」選項！
+target_ai_debt_mode = st.sidebar.selectbox("AI 尋優指定負債模式", ["恆定維持率 (增貸再投資)", "買借死 (提領生活費)", "無"])
 
 st.sidebar.markdown("##### 🎯 AI 專屬尋優資產池")
 ai_asset_opts = list(st.session_state.asset_library.keys())
@@ -225,7 +225,7 @@ with st.sidebar.form("auto_fetch_form"):
                 
                 data["beta"] = calculated_beta
                 st.session_state.asset_library[f"{ticker_upper} (自訂)"] = data
-                st.success(f"{msg} (系統自動精精確對標 QQQ 計算之真實 Beta 值 = {calculated_beta:.2f})")
+                st.success(f"{msg} (系統自動精確對標 QQQ 計算之真實 Beta 值 = {calculated_beta:.2f})")
                 st.rerun()
 
 # ==========================================
@@ -325,9 +325,10 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 if asset_info.get("type") == "Defensive":
                     ret = 0.02 / 252.0
                 elif asset_info.get("type") == "Leverage":
-                    ret = proxy_ret * 2.0 - (0.012 / 252.0)
-                elif asset_info.get("type") == "Leverage3x": # Placeholder if 3x logic is expanded, otherwise treats it via proxy
-                    ret = proxy_ret * 3.0 - (0.02 / 252.0)
+                    # Simple proxy multiplication based on beta for pre-inception leverage matching
+                    lev_mult = round(asset_info.get("beta", 2.0))
+                    if lev_mult == 0: lev_mult = 2.0
+                    ret = proxy_ret * lev_mult - (0.012 / 252.0)
                 else:
                     ret = proxy_ret
                     
@@ -799,7 +800,10 @@ if not df_comp.empty:
                 ai_results = []
                 target_beta_scaled = target_ai_beta * 100.0
                 
-                for rebal_ai in ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)"]:
+                # 💥 釋放 AI 搜尋維度：如果選擇「無」負債模式，強制納入「傳統定時」再平衡讓 AI 去跑！
+                search_rebals = ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時"]
+                
+                for rebal_ai in search_rebals:
                     max_lev_wts = (target_beta_scaled / beta_lev) + 5.0 if beta_lev > 0 else 5.0
                     for w_lev in np.arange(0.0, max_lev_wts, 5.0):
                         remaining_beta = target_beta_scaled - (w_lev * beta_lev)
@@ -824,12 +828,16 @@ if not df_comp.empty:
                                 w_def_rounded = round(w_def / 5.0) * 5.0
 
                                 debt = (w_main_rounded + w_sec_rounded + w_lev_rounded + w_def_rounded) - 100.0
-                                if debt <= 0: continue 
                                 
-                                w_legal = w_main_rounded + w_sec_rounded
-                                actual_target_margin = w_legal / debt if debt > 0 else 999.0
-                                
-                                if actual_target_margin < 4.0: continue
+                                # 💥 解除負債強制令：根據選單動態放行
+                                if target_ai_debt_mode == "無":
+                                    if debt != 0: continue # 無負債模式下，總權重必須剛好 100%
+                                    actual_target_margin = 999.0
+                                else:
+                                    if debt <= 0: continue # 質押模式下，必須借錢
+                                    w_legal = w_main_rounded + w_sec_rounded
+                                    actual_target_margin = w_legal / debt if debt > 0 else 999.0
+                                    if actual_target_margin < 4.0: continue
                                 
                                 tmp_wts = {}
                                 if w_main_rounded > 0: tmp_wts[main_proto] = w_main_rounded
@@ -856,8 +864,9 @@ if not df_comp.empty:
                 
                 def format_ai_wts(row):
                     wts_str = " + ".join([f"{k.split(' ')[0]} {v}%" for k, v in row["wts_config"].items() if v > 0])
-                    debt_short = "恆定維持率" if "恆定" in row['debt_config'] else "買借死"
-                    return f"**`{wts_str}`** (再平衡: {row['rebal_config']} ｜ {debt_short} {int(row['target_margin_pct'])}%)"
+                    debt_short = "無負債" if row['debt_config'] == "無" else ("恆定維持率" if "恆定" in row['debt_config'] else "買借死")
+                    margin_str = "" if row['debt_config'] == "無" else f" ｜ {debt_short} {int(row['target_margin_pct'])}%"
+                    return f"**`{wts_str}`** (再平衡: {row['rebal_config']}{margin_str})"
 
                 st.info(f"系統已根據您專屬的資產池 `{pool_str}` 進行解算。在**「保證絕對存活」**且**「鎖定目標 Beta = {target_ai_beta:.1f}」** 的前提下，為您找出以下實戰黃金比例：")
 
