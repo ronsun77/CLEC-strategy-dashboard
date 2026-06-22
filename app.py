@@ -110,13 +110,16 @@ def load_default_assets():
 if 'asset_library' not in st.session_state:
     st.session_state.asset_library = load_default_assets()
 
+# 💥 經典八大陣型全數回歸
 st.session_state.benchmark_strategies = {
     "純抱 SPY": {"wts": {"SPY (標普大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
     "純抱 QQQ": {"wts": {"QQQ (美股大盤)": 100.0}, "rebal": "不執行", "debt_mode": "無", "target_margin": 6.0},
+    "經典 CLEC 433 (買借死)": {"wts": {"QQQ (美股大盤)": 40.0, "QLD (美股正2)": 30.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "買借死 (提領生活費)", "target_margin": 6.0},
+    "穩健 623 (恆定維持率 600%)": {"wts": {"QQQ (美股大盤)": 60.0, "QLD (美股正2)": 20.0, "SGOV (美股超短債)": 30.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 6.0},
     "防禦 812 (年度常規 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0},
+    "彈性防禦 812 (防守型 800%)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 10.0, "SGOV (美股超短債)": 20.0}, "rebal": "CLEC彈性(防守)", "debt_mode": "恆定維持率 (增貸再投資)", "target_margin": 8.0},
     "QLD 50-50 (無負債)": {"wts": {"QLD (美股正2)": 50.0, "SGOV (美股超短債)": 50.0}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0},
-    "TQQQ SGOV 333 (無負債)": {"wts": {"TQQQ (美股正3)": 33.3, "SGOV (美股超短債)": 66.7}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0},
-    "動態切換 80-20 (股災加碼火箭)": {"wts": {"QQQ (美股大盤)": 80.0, "QLD (美股正2)": 0.0, "SGOV (美股超短債)": 20.0}, "rebal": "動態切換(19/30股災加碼)", "debt_mode": "無", "target_margin": 6.0}
+    "TQQQ SGOV 333 (無負債)": {"wts": {"TQQQ (美股正3)": 33.3, "SGOV (美股超短債)": 66.7}, "rebal": "傳統定時", "debt_mode": "無", "target_margin": 6.0}
 }
 
 if 'custom_strategies' not in st.session_state: st.session_state.custom_strategies = {}
@@ -304,7 +307,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     bankruptcy_reason = "存活"
     daily_interest_rate = margin_rate / 252.0
 
-    # 💥 動態加碼策略變數初始化
     master_peak_price = 0.0
     triggered_19 = False
     triggered_30 = False
@@ -319,12 +321,12 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             continue
             
         for name, amount in current_asset_amounts.items():
-            if name not in st.session_state.asset_library: # 容許 amount <= 0，讓動態切換有容器裝
+            if name not in st.session_state.asset_library: 
                 continue
             asset_info = st.session_state.asset_library[name]
             
             if amount <= 0:
-                ret = 0.0 # 沒有錢就不生報酬
+                ret = 0.0 
             elif name in ["無 (不配置)", "現金"]:
                 ret = 0.02 / 252.0
             elif date.date() >= asset_info["inception_date"]:
@@ -361,7 +363,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         year_end_assets = sum(current_asset_amounts.values())
         portfolio_equity = year_end_assets - current_debt_amount
         
-        # 💥 動態加碼(19/30) 邏輯植入
         if not master_prices.empty and date in master_prices.index:
             current_master_val = master_prices.loc[date]
             if current_master_val > master_peak_price:
@@ -497,9 +498,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                         if total_assets_now > 0:
                             for n in current_asset_amounts.keys(): current_asset_amounts[n] += new_loan * (current_asset_amounts[n] / total_assets_now)
             
-            # Reset triggers if we passed the crisis (optional, here we just keep tracking)
-            # Typically drawdown logic resets when a new high is reached
-            
             for name in current_asset_amounts: year_start_assets[name] = current_asset_amounts[name]
 
     num_years = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
@@ -548,7 +546,6 @@ with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", f"策略模式 {len(st.session_state.custom_strategies)+1}")
     
     col_r, col_d, col_m = st.columns(3)
-    # 💥 新增「動態切換(19/30股災加碼)」到選單中
     with col_r: rebal_mode = st.selectbox("再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "動態切換(19/30股災加碼)", "不執行"], index=0)
     with col_d: debt_mode = st.selectbox("負債運用模組", ["買借死 (提領生活費)", "恆定維持率 (增貸再投資)", "無"], index=0)
     with col_m: target_margin_input = st.number_input("目標維持率 (%)", min_value=140, max_value=2000, value=600, step=50)
@@ -562,7 +559,6 @@ with st.form("create_strategy_form"):
         with cols[i]:
             asset = st.selectbox(f"部位 {i+1}", asset_opts, index=0, key=f"sel_{i}")
             weight = st.number_input(f"權重 (%)", 0.0, 300.0, 0.0, 1.0, key=f"w_{i}")
-            # 💥 解放 >= 0 條件，讓使用者可以設定 0% 來做為隱藏容器
             if asset != "無 (不配置)" and weight >= 0: selected_assets[asset] = selected_assets.get(asset, 0) + weight
 
     if st.form_submit_button("📥 儲存策略並加入比較表") and selected_assets:
@@ -715,10 +711,12 @@ if not df_comp.empty:
         max_val = df_chart_multiple["最終淨值"].max()
         color_map = {
             "純抱 SPY": "#c7c7c7", "純抱 QQQ": "#7f7f7f", 
+            "經典 CLEC 433 (買借死)": "#1f77b4",
+            "穩健 623 (恆定維持率 600%)": "#ff7f0e",
             "防禦 812 (年度常規 800%)": "#2ca02c",
+            "彈性防禦 812 (防守型 800%)": "#059669",
             "QLD 50-50 (無負債)": "#9467bd",
-            "TQQQ SGOV 333 (無負債)": "#8c564b",
-            "動態切換 80-20 (股災加碼火箭)": "#d62728"
+            "TQQQ SGOV 333 (無負債)": "#8c564b"
         }
         custom_colors = px.colors.sequential.Reds[3:] 
         for idx, custom_name in enumerate(st.session_state.custom_strategies.keys()): color_map["🎯 " + custom_name] = custom_colors[idx % len(custom_colors)]
