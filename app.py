@@ -77,6 +77,8 @@ def load_default_assets():
         ("00670L.TW", "00670L (美股正2)", "Leverage"),
         ("SGOV", "SGOV (美股超短債)", "Defensive"),
         ("SHY", "SHY (美股1-3年短債)", "Defensive"),
+        ("KMLM", "KMLM (趨勢追蹤期貨)", "Defensive"), # 💥 新增內建管理期貨資產
+        ("DBMF", "DBMF (管理期貨策略)", "Defensive"), # 💥 新增內建管理期貨資產
         ("00865B.TW", "00865B (台股短債)", "Defensive"),
         ("00859B.TW", "00859B (台股投資級債)", "Defensive")
     ]
@@ -92,7 +94,14 @@ def load_default_assets():
                     matrix = np.cov(asset_ret.loc[common_idx], qqq_ret.loc[common_idx])
                     calc_beta = matrix[0][1] / matrix[1][1] if matrix[1][1] != 0 else 1.0
             elif a_type == "Defensive":
-                calc_beta = 0.0
+                # 💥 對沖型期貨基金本身具備獨立波動率，在此透過真實日回報率計算其相較於 QQQ 的實際 Beta 係數
+                asset_ret = data["prices"].pct_change().dropna()
+                common_idx = asset_ret.index.intersection(qqq_ret.index)
+                if len(common_idx) > 30:
+                    matrix = np.cov(asset_ret.loc[common_idx], qqq_ret.loc[common_idx])
+                    calc_beta = matrix[0][1] / matrix[1][1] if matrix[1][1] != 0 else 0.0
+                else:
+                    calc_beta = 0.0
                 
             data["beta"] = calc_beta
             lib[display_name] = data
@@ -152,11 +161,11 @@ if 'end_date' not in st.session_state:
     st.session_state.end_date = datetime.date.today()
 
 min_historical_limit = datetime.date(1999, 1, 4)
-col_d1, col_d2 = st.sidebar.columns(2)
+col_d1, col_d2 = st.columns(2)
 with col_d1:
-    start_date = st.date_input("回測起始日", value=st.session_state.start_date, min_value=min_historical_limit, max_value=datetime.date.today())
+    start_date = st.sidebar.date_input("回測起始日", value=st.session_state.start_date, min_value=min_historical_limit, max_value=datetime.date.today())
 with col_d2:
-    end_date = st.date_input("回測結束日", value=st.session_state.end_date, min_value=min_historical_limit, max_value=datetime.date.today())
+    end_date = st.sidebar.date_input("回測結束日", value=st.session_state.end_date, min_value=min_historical_limit, max_value=datetime.date.today())
 
 st.session_state.start_date = start_date
 st.session_state.end_date = end_date
@@ -185,7 +194,6 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 AI 動態尋優設定")
 target_ai_beta = st.sidebar.number_input("AI 尋優目標 Beta (預設 1.0)", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
-# 💥 解放下拉選單，加入「無」選項！
 target_ai_debt_mode = st.sidebar.selectbox("AI 尋優指定負債模式", ["恆定維持率 (增貸再投資)", "買借死 (提領生活費)", "無"])
 
 st.sidebar.markdown("##### 🎯 AI 專屬尋優資產池")
@@ -325,7 +333,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 if asset_info.get("type") == "Defensive":
                     ret = 0.02 / 252.0
                 elif asset_info.get("type") == "Leverage":
-                    # Simple proxy multiplication based on beta for pre-inception leverage matching
                     lev_mult = round(asset_info.get("beta", 2.0))
                     if lev_mult == 0: lev_mult = 2.0
                     ret = proxy_ret * lev_mult - (0.012 / 252.0)
@@ -800,7 +807,6 @@ if not df_comp.empty:
                 ai_results = []
                 target_beta_scaled = target_ai_beta * 100.0
                 
-                # 💥 釋放 AI 搜尋維度：如果選擇「無」負債模式，強制納入「傳統定時」再平衡讓 AI 去跑！
                 search_rebals = ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時"]
                 
                 for rebal_ai in search_rebals:
@@ -829,12 +835,11 @@ if not df_comp.empty:
 
                                 debt = (w_main_rounded + w_sec_rounded + w_lev_rounded + w_def_rounded) - 100.0
                                 
-                                # 💥 解除負債強制令：根據選單動態放行
                                 if target_ai_debt_mode == "無":
-                                    if debt != 0: continue # 無負債模式下，總權重必須剛好 100%
+                                    if debt != 0: continue 
                                     actual_target_margin = 999.0
                                 else:
-                                    if debt <= 0: continue # 質押模式下，必須借錢
+                                    if debt <= 0: continue 
                                     w_legal = w_main_rounded + w_sec_rounded
                                     actual_target_margin = w_legal / debt if debt > 0 else 999.0
                                     if actual_target_margin < 4.0: continue
