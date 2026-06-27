@@ -579,10 +579,18 @@ with st.form("create_strategy_form"):
     
     col_r, col_t, col_d, col_m = st.columns(4)
     with col_r: rebal_mode = st.selectbox("常規再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "不執行"], index=0)
-    with col_t: tactical_mode = st.selectbox("外掛戰術模組", ["無", "19/30股災加碼(翻倍停利)"], index=0)
+    with col_t: tactical_ui = st.selectbox("外掛戰術模組", ["無", "19/30股災加碼 (每次10%)", "19/30股災加碼 (每次5%)"], index=0)
     with col_d: debt_mode = st.selectbox("負債運用模組", ["買借死 (提領生活費)", "恆定維持率 (增貸再投資)", "無"], index=0)
     with col_m: target_margin_input = st.number_input("目標維持率 (%)", min_value=140, max_value=2000, value=600, step=50)
     
+    # 💥 解析介面文字對應到內部參數
+    if tactical_ui == "無":
+        tactical_mode = "無"
+        tactical_pct = 0.0
+    else:
+        tactical_mode = "19/30股災加碼(翻倍停利)"
+        tactical_pct = 10.0 if "10%" in tactical_ui else 5.0
+        
     st.write("精確輸入資產權重 (%)：")
     cols = st.columns(5)
     selected_assets = {}
@@ -600,6 +608,7 @@ with st.form("create_strategy_form"):
             "wts": selected_assets, 
             "rebal": rebal_mode, 
             "tactical": tactical_mode, 
+            "tactical_pct": tactical_pct, # 💥 儲存比例設定
             "debt_mode": debt_mode,
             "target_margin": target_margin_input / 100.0 
         }
@@ -878,6 +887,14 @@ if not df_comp.empty:
                 ai_results = []
                 target_beta_scaled = target_ai_beta * 100.0
                 
+                # 💥 將 AI 尋優選項轉換為內部參數
+                if target_ai_tactical == "無":
+                    tac_mode = "無"
+                    tac_pct = 0.0
+                else:
+                    tac_mode = "19/30股災加碼(翻倍停利)"
+                    tac_pct = 10.0 if "10%" in target_ai_tactical else 5.0
+                
                 search_rebals = ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時"]
                 
                 for rebal_ai in search_rebals:
@@ -924,7 +941,8 @@ if not df_comp.empty:
                                 config = {
                                     "wts": tmp_wts,
                                     "rebal": rebal_ai,
-                                    "tactical": target_ai_tactical,
+                                    "tactical": tac_mode,
+                                    "tactical_pct": tac_pct, # 💥 讓 AI 在尋優時也能跑 5% 或 10%
                                     "debt_mode": target_ai_debt_mode,
                                     "target_margin": actual_target_margin
                                 }
