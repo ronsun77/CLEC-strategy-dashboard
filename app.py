@@ -194,7 +194,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 AI 動態尋優設定")
 target_ai_beta = st.sidebar.number_input("AI 尋優目標 Beta (預設 1.0)", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
 target_ai_debt_mode = st.sidebar.selectbox("AI 尋優指定負債模式", ["恆定維持率 (增貸再投資)", "買借死 (提領生活費)", "無"])
-target_ai_tactical = st.sidebar.selectbox("AI 尋優戰術加碼模組", ["無", "19/30股災加碼(翻倍停利)"])
+target_ai_tactical = st.sidebar.selectbox("AI 尋優戰術加碼模組", ["無", "19/30股災加碼 (每次10%)", "19/30股災加碼 (每次5%)"])
 
 st.sidebar.markdown("##### 🎯 AI 專屬尋優資產池")
 ai_asset_opts = list(st.session_state.asset_library.keys())
@@ -245,12 +245,17 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     debt_mode = strategy_config.get("debt_mode", "無")
     target_margin_ratio = strategy_config.get("target_margin", 6.0) 
     tactical_mode = strategy_config.get("tactical", "無")
+    tactical_pct = strategy_config.get("tactical_pct", 10.0) / 100.0  # 💥 正確讀取 5% 或 10%
     
     initial_total_weight = sum(weights_dict.values())
     initial_debt_ratio = max(0, initial_total_weight - 100.0)
     sys_beta = 0.0
     
-    main_proto = next((n for n in weights_dict.keys() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"), "QQQ (美股大盤)")
+    # 💥 智能判斷彈藥庫來源：優先找原型資產，若無原型資產則找防守資產(如SGOV)
+    main_proto = next((n for n in weights_dict.keys() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"), None)
+    if main_proto is None:
+        main_proto = next((n for n in weights_dict.keys() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"), "QQQ (美股大盤)")
+        
     main_lev = next((n for n in weights_dict.keys() if st.session_state.asset_library.get(n, {}).get("type") == "Leverage"), "QLD (美股正2)")
     
     master_prices = pd.Series(dtype=float)
@@ -401,8 +406,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                         master_peak_price = current_master_val 
                 
                 total_assets_now = sum(current_asset_amounts.values())
+                # 💥 使用動態抓取的 tactical_pct (10% 或 5%)
                 if master_dd >= 0.19 and not triggered_19:
-                    shift_val = min(total_assets_now * 0.10, current_asset_amounts[main_proto])
+                    shift_val = min(total_assets_now * tactical_pct, current_asset_amounts[main_proto])
                     current_asset_amounts[main_proto] -= shift_val
                     current_asset_amounts[main_lev] += shift_val
                     dynamic_fund_shifted += shift_val
@@ -410,7 +416,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     triggered_19 = True
                     
                 if master_dd >= 0.30 and not triggered_30:
-                    shift_val = min(total_assets_now * 0.10, current_asset_amounts[main_proto])
+                    shift_val = min(total_assets_now * tactical_pct, current_asset_amounts[main_proto])
                     current_asset_amounts[main_proto] -= shift_val
                     current_asset_amounts[main_lev] += shift_val
                     dynamic_fund_shifted += shift_val
@@ -583,7 +589,6 @@ with st.form("create_strategy_form"):
     with col_d: debt_mode = st.selectbox("負債運用模組", ["買借死 (提領生活費)", "恆定維持率 (增貸再投資)", "無"], index=0)
     with col_m: target_margin_input = st.number_input("目標維持率 (%)", min_value=140, max_value=2000, value=600, step=50)
     
-    # 💥 解析介面文字對應到內部參數
     if tactical_ui == "無":
         tactical_mode = "無"
         tactical_pct = 0.0
@@ -608,7 +613,7 @@ with st.form("create_strategy_form"):
             "wts": selected_assets, 
             "rebal": rebal_mode, 
             "tactical": tactical_mode, 
-            "tactical_pct": tactical_pct, # 💥 儲存比例設定
+            "tactical_pct": tactical_pct,
             "debt_mode": debt_mode,
             "target_margin": target_margin_input / 100.0 
         }
@@ -621,7 +626,7 @@ if st.session_state.custom_strategies:
         for s_name, config in st.session_state.custom_strategies.items():
             wts_str = " + ".join([f"{k.split(' ')[0]} ({v}%)" for k, v in config["wts"].items()])
             margin_info = f" ｜ 目標維持率: {config.get('target_margin', 6.0) * 100:.0f}%" if config['debt_mode'] == "恆定維持率 (增貸再投資)" else ""
-            tac_info = f" ｜ 戰術: {config.get('tactical', '無')}" if config.get('tactical', '無') != "無" else ""
+            tac_info = f" ｜ 戰術: {config.get('tactical', '無')} {f'({config.get('tactical_pct', 0)}%)' if config.get('tactical', '無') != '無' else ''}"
             st.info(f"**{s_name}**\n\n👉 配比：`{wts_str}`\n\n👉 設定：{config.get('rebal', '不執行')}{tac_info} ｜ {config.get('debt_mode', '無')}{margin_info}")
 
     col_del1, col_del2, col_del3 = st.columns([2, 1, 1])
@@ -679,7 +684,6 @@ if not df_comp.empty:
         * **CAGR (年化報酬率)**：在本系統包含現金流（提領生活費）的模型中，此數據即等同於投資人的實質 IRR（內部報酬率）。
         """)
     
-    # 💥 合併顯示戰術與戰略
     df_comp["綜合再平衡"] = df_comp.apply(lambda x: f"{x['再平衡']} + {x['戰術加碼']}" if x['戰術加碼'] != '無' else x['再平衡'], axis=1)
 
     cols_order = [
@@ -887,7 +891,6 @@ if not df_comp.empty:
                 ai_results = []
                 target_beta_scaled = target_ai_beta * 100.0
                 
-                # 💥 將 AI 尋優選項轉換為內部參數
                 if target_ai_tactical == "無":
                     tac_mode = "無"
                     tac_pct = 0.0
@@ -942,7 +945,7 @@ if not df_comp.empty:
                                     "wts": tmp_wts,
                                     "rebal": rebal_ai,
                                     "tactical": tac_mode,
-                                    "tactical_pct": tac_pct, # 💥 讓 AI 在尋優時也能跑 5% 或 10%
+                                    "tactical_pct": tac_pct,
                                     "debt_mode": target_ai_debt_mode,
                                     "target_margin": actual_target_margin
                                 }
@@ -951,6 +954,7 @@ if not df_comp.empty:
                                 res["wts_config"] = config["wts"]
                                 res["rebal_config"] = config["rebal"]
                                 res["tactical_config"] = config["tactical"]
+                                res["tactical_pct"] = config["tactical_pct"]
                                 res["debt_config"] = config["debt_mode"]
                                 res["target_margin_pct"] = actual_target_margin * 100 
                                 ai_results.append(res)
@@ -962,7 +966,7 @@ if not df_comp.empty:
                     wts_str = " + ".join([f"{k.split(' ')[0]} {v}%" for k, v in row["wts_config"].items() if v > 0])
                     debt_short = "無負債" if row['debt_config'] == "無" else ("恆定維持率" if "恆定" in row['debt_config'] else "買借死")
                     margin_str = "" if row['debt_config'] == "無" else f" ｜ {debt_short} {int(row['target_margin_pct'])}%"
-                    tac_str = f" + {row['tactical_config']}" if row['tactical_config'] != '無' else ""
+                    tac_str = f" + {row['tactical_config']} ({row.get('tactical_pct', 0)}%)" if row['tactical_config'] != '無' else ""
                     return f"**`{wts_str}`** (再平衡: {row['rebal_config']}{tac_str}{margin_str})"
 
                 st.info(f"系統已根據您專屬的資產池 `{pool_str}` 進行解算。在**「保證絕對存活」**且**「鎖定目標 Beta = {target_ai_beta:.1f}」** 的前提下，為您找出以下實戰黃金比例：")
