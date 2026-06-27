@@ -392,6 +392,11 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 current_master_val = master_prices.loc[date]
                 if current_master_val > master_peak_price:
                     master_peak_price = current_master_val
+                    # 💥 新增：大盤創歷史新高，代表前次危機徹底解除，重置所有戰術狀態
+                    triggered_19 = False
+                    triggered_30 = False
+                    dynamic_fund_shifted = 0.0
+                    lowest_entry_lev_index = 0.0
                 
                 master_dd = (master_peak_price - current_master_val) / master_peak_price if master_peak_price > 0 else 0
                 
@@ -459,7 +464,8 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         
         is_tactical_active = (dynamic_fund_shifted > 0.0)
 
-        if not is_bankrupt and not is_tactical_active:
+        # 💥 修改：移除 not is_tactical_active 的凍結枷鎖，讓平時的紀律持續運作
+        if not is_bankrupt:
             if rebalance_type in ["CLEC彈性(防守)", "CLEC彈性(進取)"]:
                 is_defensive = (rebalance_type == "CLEC彈性(防守)")
                 threshold_up = 1.15 if is_defensive else 1.25
@@ -503,10 +509,10 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             strategy_annuals[date.year] = (portfolio_equity / prev_eoy_equity) - 1.0 if prev_eoy_equity > 0 else 0
             prev_eoy_equity = portfolio_equity
             
-            if not is_tactical_active:
-                if rebalance_type == "CLEC":
-                    for name, amount in current_asset_amounts.items():
-                        if st.session_state.asset_library.get(name, {}).get("type") == "Leverage":
+            # 💥 修改：移除 if not is_tactical_active 枷鎖，強制執行年底再平衡
+            if rebalance_type == "CLEC":
+                for name, amount in current_asset_amounts.items():
+                    if st.session_state.asset_library.get(name, {}).get("type") == "Leverage":
                             yr_ret = (amount / year_start_assets.get(name, amount)) - 1.0 if year_start_assets.get(name, amount) > 0 else 0
                             if yr_ret > 0:
                                 extract = ((amount / (1+yr_ret)) * yr_ret) * 0.3
@@ -520,11 +526,16 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                                         rescue = current_asset_amounts[d_name] * 0.02
                                         current_asset_amounts[d_name] -= rescue; current_asset_amounts[name] += rescue; break
                                         
-                elif rebalance_type == "傳統定時":
-                    total_assets = sum(current_asset_amounts.values())
-                    for name, weight in weights_dict.items(): 
-                        if name in current_asset_amounts:
-                            current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
+            elif rebalance_type == "傳統定時":
+                total_assets = sum(current_asset_amounts.values())
+                for name, weight in weights_dict.items(): 
+                    if name in current_asset_amounts:
+                        current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
+
+            # 💥 新增：年底再平衡會將比例強制洗牌，此時將獨立追蹤的戰術帳戶清零，讓獲利/虧損自然融入總資產中
+            if rebalance_type in ["CLEC", "傳統定時"]:
+                dynamic_fund_shifted = 0.0
+                lowest_entry_lev_index = 0.0
 
             if debt_mode == "恆定維持率 (增貸再投資)":
                 if legal_collateral > 0 and current_reg_margin > target_margin_ratio:
