@@ -507,12 +507,28 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         total_margin_curve.append({"日期": date, "總擔保維持率": min(current_total_margin, 10.0)})
         bond_margin_curve.append({"日期": date, "純債維持率": min(current_bond_margin, 10.0)})
         
-        # 虛擬帳戶隔離：將戰術資金從常規部位暫時抽離，以免干擾常規的再平衡計算
-        if dynamic_fund_shifted > 0.0 and main_lev in current_asset_amounts:
-            current_asset_amounts[main_lev] = max(0.0, current_asset_amounts[main_lev] - dynamic_fund_shifted)
+        is_tactical_active = (dynamic_fund_shifted > 0.0)
 
-        if not is_bankrupt:
-            if rebalance_type in ["CLEC彈性(防守)", "CLEC彈性(進取)"]:
+        if not is_bankrupt and not is_tactical_active:
+            # 💥 新增：獨立的閾值再平衡機制 (監控槓桿部位是否漲跌 50%)
+            if rebalance_type == "閾值平衡(±50%)":
+                trigger_rebal = False
+                for name, amount in current_asset_amounts.items():
+                    if st.session_state.asset_library.get(name, {}).get("type") == "Leverage":
+                        last_amt = last_rebal_assets.get(name, amount)
+                        if last_amt > 0:
+                            if amount >= last_amt * 1.50 or amount <= last_amt * 0.50:
+                                trigger_rebal = True
+                                break
+                if trigger_rebal:
+                    total_assets = sum(current_asset_amounts.values())
+                    for name, weight in weights_dict.items(): 
+                        if name in current_asset_amounts:
+                            current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
+                    last_rebal_equity = portfolio_equity
+                    last_rebal_assets = current_asset_amounts.copy()
+
+            elif rebalance_type in ["CLEC彈性(防守)", "CLEC彈性(進取)"]:
                 is_defensive = (rebalance_type == "CLEC彈性(防守)")
                 threshold_up = 1.15 if is_defensive else 1.25
                 threshold_down = 0.90 if is_defensive else 0.82
