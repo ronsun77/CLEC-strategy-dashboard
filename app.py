@@ -471,7 +471,8 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     lowest_entry_lev_index = lev_index 
                     triggered_30 = True
 
-        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
+        # 💥 修正：將 Prototype (原型) 與 Defensive (防守短債) 都計入法定擔保品 (legal_collateral)
+        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") in ["Prototype", "Defensive"]])
         
         if current_debt_amount > 0:
             current_reg_margin = legal_collateral / current_debt_amount
@@ -487,9 +488,10 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                             shortfall -= repay
                             if shortfall <= 0: break
 
-        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"])
+        # 💥 確保更新維持率時的分子也包含 Defensive
+        legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") in ["Prototype", "Defensive"]])
         defensive_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
-        total_collateral = legal_collateral + defensive_collateral
+        total_collateral = legal_collateral # 總擔保品與法定擔保品等價
         
         current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         current_total_margin = total_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
