@@ -239,7 +239,7 @@ with st.sidebar.form("auto_fetch_form"):
                 
                 data["beta"] = calculated_beta
                 st.session_state.asset_library[f"{ticker_upper} (自訂)"] = data
-                st.success(f"{msg} (系統自動精精確對標 QQQ 計算之真實 Beta 值 = {calculated_beta:.2f})")
+                st.success(f"{msg} (系統自動精確對標 QQQ 計算之真實 Beta 值 = {calculated_beta:.2f})")
                 st.rerun()
 
 # ==========================================
@@ -251,13 +251,13 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     debt_mode = strategy_config.get("debt_mode", "無")
     target_margin_ratio = strategy_config.get("target_margin", 6.0) 
     tactical_mode = strategy_config.get("tactical", "無")
-    tactical_pct = strategy_config.get("tactical_pct", 10.0) / 100.0  
+    # 💥 精準讀取 0.05 或 0.10，不再混淆
+    tactical_pct = strategy_config.get("tactical_pct", 0.10)
     
     initial_total_weight = sum(weights_dict.values())
     initial_debt_ratio = max(0, initial_total_weight - 100.0)
     sys_beta = 0.0
     
-    # 智能判斷彈藥庫來源：優先找原型資產，若無原型資產則找防守資產(如SGOV)
     main_proto = next((n for n in weights_dict.keys() if st.session_state.asset_library.get(n, {}).get("type") == "Prototype"), None)
     if main_proto is None:
         main_proto = next((n for n in weights_dict.keys() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"), "QQQ (美股大盤)")
@@ -329,7 +329,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
     lev_index = 1.0               
     lowest_entry_lev_index = 0.0  
     dynamic_fund_shifted = 0.0    
-    tactical_borrowed_principal = 0.0 # 追蹤質押加碼借出的本金
+    tactical_borrowed_principal = 0.0 
     triggered_19 = False
     triggered_30 = False
 
@@ -383,7 +383,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         
         withdrawal_amount = 0
         if debt_mode == "買借死 (提領生活費)":
-            if withdraw_mode == "總資產百分比 (%)":
+            if withdraw_mode == "總資 শতকরা比 (%)":
                 withdrawal_amount = (sum(current_asset_amounts.values()) * withdraw_value) / 252.0
             else:
                 withdrawal_amount = withdraw_value / 252.0
@@ -397,9 +397,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         if "19/30股災加碼" in tactical_mode:
             if not master_prices.empty and date in master_prices.index:
                 current_master_val = master_prices.loc[date]
-                # 創新高重置所有戰術狀態
                 if current_master_val > master_peak_price:
                     master_peak_price = current_master_val
+                    # 大盤創新高，戰術結算出場
                     if dynamic_fund_shifted > 0.0:
                         current_asset_amounts[main_lev] -= dynamic_fund_shifted
                         if "質押借貸" in tactical_mode:
@@ -419,7 +419,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 
                 master_dd = (master_peak_price - current_master_val) / master_peak_price if master_peak_price > 0 else 0
                 
-                # 翻倍停利結算
+                # 戰術翻倍停利結算
                 if triggered_19 and lowest_entry_lev_index > 0:
                     if lev_index >= lowest_entry_lev_index * 2.0:
                         current_asset_amounts[main_lev] -= dynamic_fund_shifted
@@ -439,7 +439,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                         lowest_entry_lev_index = 0.0
                         master_peak_price = current_master_val 
                 
-                # 股災進場 (買入或質押)
+                # 股災進場
                 total_assets_now = sum(current_asset_amounts.values())
                 if master_dd >= 0.19 and not triggered_19:
                     if "質押借貸" in tactical_mode:
@@ -471,7 +471,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     lowest_entry_lev_index = lev_index 
                     triggered_30 = True
 
-        # 💥 修正：將 Prototype (原型) 與 Defensive (防守短債) 都計入法定擔保品 (legal_collateral)
+        # 💥 修復：將 Defensive 強制納入法定擔保品 (SGOV 質押完全合法免斷頭)
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") in ["Prototype", "Defensive"]])
         
         if current_debt_amount > 0:
@@ -488,10 +488,9 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                             shortfall -= repay
                             if shortfall <= 0: break
 
-        # 💥 確保更新維持率時的分子也包含 Defensive
         legal_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") in ["Prototype", "Defensive"]])
         defensive_collateral = sum([amount for n, amount in current_asset_amounts.items() if st.session_state.asset_library.get(n, {}).get("type") == "Defensive"])
-        total_collateral = legal_collateral # 總擔保品與法定擔保品等價
+        total_collateral = legal_collateral 
         
         current_reg_margin = legal_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
         current_total_margin = total_collateral / current_debt_amount if current_debt_amount > 0 else 10.0
@@ -506,11 +505,12 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         reg_margin_curve.append({"日期": date, "法規維持率": min(current_reg_margin, 10.0)})
         total_margin_curve.append({"日期": date, "總擔保維持率": min(current_total_margin, 10.0)})
         bond_margin_curve.append({"日期": date, "純債維持率": min(current_bond_margin, 10.0)})
-        
-        is_tactical_active = (dynamic_fund_shifted > 0.0)
 
-        if not is_bankrupt and not is_tactical_active:
-            # 💥 新增：獨立的閾值再平衡機制 (監控槓桿部位是否漲跌 50%)
+        # 虛擬帳戶隔離：將戰術資金從常規部位暫時抽離，以免干擾常規的再平衡計算
+        if dynamic_fund_shifted > 0.0 and main_lev in current_asset_amounts:
+            current_asset_amounts[main_lev] = max(0.0, current_asset_amounts[main_lev] - dynamic_fund_shifted)
+
+        if not is_bankrupt:
             if rebalance_type == "閾值平衡(±50%)":
                 trigger_rebal = False
                 for name, amount in current_asset_amounts.items():
@@ -527,7 +527,6 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                             current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
                     last_rebal_equity = portfolio_equity
                     last_rebal_assets = current_asset_amounts.copy()
-
             elif rebalance_type in ["CLEC彈性(防守)", "CLEC彈性(進取)"]:
                 is_defensive = (rebalance_type == "CLEC彈性(防守)")
                 threshold_up = 1.15 if is_defensive else 1.25
@@ -593,11 +592,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                     if name in current_asset_amounts:
                         current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
 
-            # 年底再平衡會將比例強制洗牌，此時將獨立追蹤的戰術帳戶清零（融入戰略池）
-            if rebalance_type in ["CLEC", "傳統定時"]:
-                dynamic_fund_shifted = 0.0
-                tactical_borrowed_principal = 0.0
-                lowest_entry_lev_index = 0.0
+            # 💥 已徹底移除錯誤的戰術清零機制，讓戰術帳戶跨年安穩留存！
 
             if debt_mode == "恆定維持率 (增貸再投資)":
                 if legal_collateral > 0 and current_reg_margin > target_margin_ratio:
@@ -610,7 +605,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             
             for name in current_asset_amounts: year_start_assets[name] = current_asset_amounts[name]
 
-        # 虛擬帳戶回歸：常規計算結束後，將戰術資金加回總部位
+        # 虛擬帳戶回歸：常規計算結束後，將戰術資金無損加回總部位
         if dynamic_fund_shifted > 0.0 and main_lev in current_asset_amounts:
             current_asset_amounts[main_lev] += dynamic_fund_shifted
 
@@ -661,7 +656,7 @@ with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", f"策略模式 {len(st.session_state.custom_strategies)+1}")
     
     col_r, col_t, col_d, col_m = st.columns(4)
-    with col_r: rebal_mode = st.selectbox("常規再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "不執行"], index=0)
+    with col_r: rebal_mode = st.selectbox("常規再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "閾值平衡(±50%)", "不執行"], index=0)
     with col_t: tactical_ui = st.selectbox("外掛戰術模組", [
         "無", 
         "19/30股災加碼_賣出資產 (每次10%)", 
@@ -680,7 +675,8 @@ with st.form("create_strategy_form"):
             tactical_mode = "19/30股災加碼_質押借貸(翻倍停利)"
         else:
             tactical_mode = "19/30股災加碼_賣出資產(翻倍停利)"
-        tactical_pct = 10.0 if "10%" in tactical_ui else 5.0
+        # 💥 確保介面儲存的是精準的 0.1 或 0.05
+        tactical_pct = 0.10 if "10%" in tactical_ui else 0.05
         
     st.write("精確輸入資產權重 (%)：")
     cols = st.columns(5)
@@ -712,6 +708,7 @@ if st.session_state.custom_strategies:
         for s_name, config in st.session_state.custom_strategies.items():
             wts_str = " + ".join([f"{k.split(' ')[0]} ({v}%)" for k, v in config["wts"].items()])
             margin_info = f" ｜ 目標維持率: {config.get('target_margin', 6.0) * 100:.0f}%" if config['debt_mode'] == "恆定維持率 (增貸再投資)" else ""
+            # 💥 修正文字顯示邏輯
             tac_info = f" ｜ 戰術: {config.get('tactical', '無')} {f'({config.get('tactical_pct', 0)*100:.0f}%)' if config.get('tactical', '無') != '無' else ''}"
             st.info(f"**{s_name}**\n\n👉 配比：`{wts_str}`\n\n👉 設定：{config.get('rebal', '不執行')}{tac_info} ｜ {config.get('debt_mode', '無')}{margin_info}")
 
@@ -911,7 +908,7 @@ if not df_comp.empty:
     legend_style = dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, title="")
     
     with col_m1:
-        st.subheader("1. 法規維持率 (僅計原型)")
+        st.subheader("1. 法規維持率 (含短債)")
         if reg_margin_chart_data:
             df_reg = pd.DataFrame(reg_margin_chart_data)
             df_reg_sampled = df_reg.iloc[::5, :]
@@ -987,7 +984,7 @@ if not df_comp.empty:
                         tac_mode = "19/30股災加碼_質押借貸(翻倍停利)"
                     else:
                         tac_mode = "19/30股災加碼_賣出資產(翻倍停利)"
-                    tac_pct = 10.0 if "10%" in target_ai_tactical else 5.0
+                    tac_pct = 0.10 if "10%" in target_ai_tactical else 0.05
                 
                 search_rebals = ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時"]
                 
