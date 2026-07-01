@@ -277,9 +277,11 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 
     if master_prices.empty:
         trading_days = pd.date_range(start=start_date, end=end_date, freq='B')
+        master_returns = pd.Series(0.0, index=trading_days)
     else:
         master_slice = master_prices.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
         trading_days = master_slice.index
+        master_returns = master_slice.pct_change().fillna(0.0)
     
     df_returns = pd.DataFrame(index=trading_days)
     
@@ -356,9 +358,8 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             elif date.date() >= asset_info["inception_date"]:
                 ret = df_returns.loc[date, name] if name in df_returns.columns else 0.0
             else:
-                proxy_ret = 0.0
-                if "QQQ (美股大盤)" in df_returns.columns: proxy_ret = df_returns.loc[date, "QQQ (美股大盤)"]
-                elif "SPY (標普大盤)" in df_returns.columns: proxy_ret = df_returns.loc[date, "SPY (標普大盤)"]
+                # 💥 修正：直接讀取全域大盤回報率，不再受限於策略自身是否配置大盤
+                proxy_ret = master_returns.loc[date] if date in master_returns.index else 0.0
                 
                 if asset_info.get("type") == "Defensive":
                     ret = 0.02 / 252.0
