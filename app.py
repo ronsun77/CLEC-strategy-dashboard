@@ -657,7 +657,7 @@ with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", f"策略模式 {len(st.session_state.custom_strategies)+1}")
     
     col_r, col_t, col_d, col_m = st.columns(4)
-    with col_r: rebal_mode = st.selectbox("常規再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "閾值平衡(±50%)", "不執行"], index=0)
+    with col_r: rebal_mode = st.selectbox("常規再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "閾值平衡(±50%)", "閾值平衡(+15%/-10%)", "不執行"], index=0)
     with col_t: tactical_ui = st.selectbox("外掛戰術模組", [
         "無", 
         "19/30股災加碼_賣出資產 (每次10%)", 
