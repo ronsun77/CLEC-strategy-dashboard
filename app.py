@@ -384,7 +384,7 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
         
         withdrawal_amount = 0
         if debt_mode == "買借死 (提領生活費)":
-            if withdraw_mode == "總資 শতকরা比 (%)":
+            if withdraw_mode == "總資產百分比 (%)":
                 withdrawal_amount = (sum(current_asset_amounts.values()) * withdraw_value) / 252.0
             else:
                 withdrawal_amount = withdraw_value / 252.0
@@ -512,20 +512,25 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
             current_asset_amounts[main_lev] = max(0.0, current_asset_amounts[main_lev] - dynamic_fund_shifted)
 
         if not is_bankrupt:
-            if rebalance_type == "閾值平衡(±50%)":
+            if "閾值平衡" in rebalance_type:
                 trigger_rebal = False
-                for name, amount in current_asset_amounts.items():
-                    if st.session_state.asset_library.get(name, {}).get("type") == "Leverage":
-                        last_amt = last_rebal_assets.get(name, amount)
-                        if last_amt > 0:
-                            if amount >= last_amt * 1.50 or amount <= last_amt * 0.50:
+                total_assets_now = sum(current_asset_amounts.values())
+                if total_assets_now > 0:
+                    up_shift = 50.0 if "50%" in rebalance_type else 15.0
+                    down_shift = 50.0 if "50%" in rebalance_type else 10.0
+                    
+                    for name, amount in current_asset_amounts.items():
+                        if st.session_state.asset_library.get(name, {}).get("type") == "Leverage":
+                            target_w = weights_dict.get(name, 0.0)
+                            current_w = (amount / total_assets_now) * 100.0
+                            # 判斷槓桿部位是否在「整體組合中的佔比」觸碰了偏移閾值
+                            if current_w >= target_w + up_shift or current_w <= target_w - down_shift:
                                 trigger_rebal = True
                                 break
                 if trigger_rebal:
-                    total_assets = sum(current_asset_amounts.values())
                     for name, weight in weights_dict.items(): 
                         if name in current_asset_amounts:
-                            current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
+                            current_asset_amounts[name] = total_assets_now * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
                     last_rebal_equity = portfolio_equity
                     last_rebal_assets = current_asset_amounts.copy()
             elif rebalance_type in ["CLEC彈性(防守)", "CLEC彈性(進取)"]:
@@ -592,6 +597,27 @@ def calculate_metrics(strategy_config, margin_rate, start_date, end_date, init_c
                 for name, weight in weights_dict.items(): 
                     if name in current_asset_amounts:
                         current_asset_amounts[name] = total_assets * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
+                last_rebal_equity = portfolio_equity
+                last_rebal_assets = current_asset_amounts.copy()
+                
+            elif rebalance_type == "年度定時(+15%/-10%觸發)":
+                trigger_rebal = False
+                total_assets_now = sum(current_asset_amounts.values())
+                if total_assets_now > 0:
+                    for name, amount in current_asset_amounts.items():
+                        if st.session_state.asset_library.get(name, {}).get("type") == "Leverage":
+                            target_w = weights_dict.get(name, 0.0)
+                            current_w = (amount / total_assets_now) * 100.0
+                            # 年底精算佔比，碰觸偏移閾值才強迫出手洗牌
+                            if current_w >= target_w + 15.0 or current_w <= target_w - 10.0:
+                                trigger_rebal = True
+                                break
+                if trigger_rebal:
+                    for name, weight in weights_dict.items(): 
+                        if name in current_asset_amounts:
+                            current_asset_amounts[name] = total_assets_now * (weight/sum([w for k,w in weights_dict.items() if k in current_asset_amounts]))
+                    last_rebal_equity = portfolio_equity
+                    last_rebal_assets = current_asset_amounts.copy()
 
             # 💥 已徹底移除錯誤的戰術清零機制，讓戰術帳戶跨年安穩留存！
 
@@ -657,7 +683,8 @@ with st.form("create_strategy_form"):
     strat_name = st.text_input("自訂策略名稱", f"策略模式 {len(st.session_state.custom_strategies)+1}")
     
     col_r, col_t, col_d, col_m = st.columns(4)
-    with col_r: rebal_mode = st.selectbox("常規再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "年度定時(+15%/-10%觸發)", "閾值平衡(±50%)", "閾值平衡(+15%/-10%)", "不執行"], index=0)
+    # 3. 移除每日 +15/-10 的選項
+    with col_r: rebal_mode = st.selectbox("常規再平衡模組", ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "年度定時(+15%/-10%觸發)", "閾值平衡(±50%)", "不執行"], index=0)
     with col_t: tactical_ui = st.selectbox("外掛戰術模組", [
         "無", 
         "19/30股災加碼_賣出資產 (每次10%)", 
@@ -987,7 +1014,7 @@ if not df_comp.empty:
                         tac_mode = "19/30股災加碼_賣出資產(翻倍停利)"
                     tac_pct = 0.10 if "10%" in target_ai_tactical else 0.05
                 
-                search_rebals = ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時"]
+                search_rebals = ["CLEC", "CLEC彈性(防守)", "CLEC彈性(進取)", "傳統定時", "年度定時(+15%/-10%觸發)", "閾值平衡(±50%)", "閾值平衡(+15%/-10%)"]
                 
                 for rebal_ai in search_rebals:
                     max_lev_wts = (target_beta_scaled / beta_lev) + 5.0 if beta_lev > 0 else 5.0
